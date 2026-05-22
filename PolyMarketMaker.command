@@ -1,4 +1,5 @@
 #!/bin/zsh
+set -euo pipefail
 APP_HOME="$(cd "$(dirname "$0")" && pwd)"
 cd "$APP_HOME" || exit 1
 set -a
