@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.example.polymm</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>__APP_HOME__/run_poly_mm.sh</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>__APP_HOME__</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>__APP_HOME__/poly_mm_launchd.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>__APP_HOME__/poly_mm_launchd.err.log</string>
+</dict>
+</plist>

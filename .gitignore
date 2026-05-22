@@ -1,0 +1,21 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+
+# Local secrets and runtime state
+.env
+.poly_mm_env
+poly_config_pro.json
+poly_mm_runtime_state.json
+
+# Logs
+*.log
+poly_mm_*.log
+
+# Local/generated macOS bundle
+PolyMarketMaker.app/
+
+# Virtual environments
+.venv/
+venv/
+env/
