@@ -919,19 +919,30 @@ class PolyQuickTrader:
         size = usdc_amount / price
         if size < 5.0:
             raise RuntimeError(f"买入金额太小，按价格 {price:.4f} 至少需要 {price * 5:.2f} USDC 才满足 5 份最小下单量")
-        self.logger.info("提交买入订单: %s price=%.4f size=%.4f tick=%s", direction, price, size, tick_size or market.tick_size)
-        resp = await asyncio.wait_for(
-            asyncio.to_thread(
-                client.create_and_post_order,
-                order_args=OrderArgs(token_id=token_id, price=float(price), size=float(size), side=Side.BUY),
-                options=PartialCreateOrderOptions(tick_size=tick_size or market.tick_size),
-                order_type=OrderType.GTC,
-                post_only=False,
-            ),
-            timeout=25,
+        client_order_id = str(uuid.uuid4())
+        self.logger.info(
+            "提交买入订单: %s price=%.4f size=%.4f tick=%s client_order_id=%s",
+            direction, price, size, tick_size or market.tick_size, client_order_id,
         )
+        try:
+            resp = await asyncio.wait_for(
+                asyncio.to_thread(
+                    client.create_and_post_order,
+                    order_args=OrderArgs(token_id=token_id, price=float(price), size=float(size), side=Side.BUY),
+                    options=PartialCreateOrderOptions(tick_size=tick_size or market.tick_size),
+                    order_type=OrderType.GTC,
+                    post_only=False,
+                ),
+                timeout=ORDER_SUBMIT_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            raise RuntimeError(
+                f"提交买入订单超时（client_order_id={client_order_id}）。"
+                f"订单状态未知，可能已被交易所接收。请打开 https://polymarket.com/portfolio "
+                f"核对后再决定下一步，切勿直接点重试。"
+            )
         if isinstance(resp, dict) and resp.get("success") is False:
-            raise RuntimeError(f"交易所拒绝订单: {resp}")
+            raise RuntimeError(f"交易所拒绝订单 (client_order_id={client_order_id}): {resp}")
         await self.push_trade_result("快速买入", market.question, direction, size, price, resp, market_slug=market.slug)
         return resp
 
@@ -1065,19 +1076,30 @@ class PolyQuickTrader:
         token_id = str(position.get("asset"))
         tick_size = str(position.get("orderPriceMinTickSize") or "0.01")
         price = self.clamp_price(price, tick_size)
-        self.logger.info("提交卖出订单: %s price=%.4f size=%.4f tick=%s", token_id[:12], price, size, tick_size)
-        resp = await asyncio.wait_for(
-            asyncio.to_thread(
-                client.create_and_post_order,
-                order_args=OrderArgs(token_id=token_id, price=float(price), size=float(size), side=Side.SELL),
-                options=PartialCreateOrderOptions(tick_size=tick_size),
-                order_type=OrderType.GTC,
-                post_only=False,
-            ),
-            timeout=25,
+        client_order_id = str(uuid.uuid4())
+        self.logger.info(
+            "提交卖出订单: %s price=%.4f size=%.4f tick=%s client_order_id=%s",
+            token_id[:12], price, size, tick_size, client_order_id,
         )
+        try:
+            resp = await asyncio.wait_for(
+                asyncio.to_thread(
+                    client.create_and_post_order,
+                    order_args=OrderArgs(token_id=token_id, price=float(price), size=float(size), side=Side.SELL),
+                    options=PartialCreateOrderOptions(tick_size=tick_size),
+                    order_type=OrderType.GTC,
+                    post_only=False,
+                ),
+                timeout=ORDER_SUBMIT_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            raise RuntimeError(
+                f"提交卖出订单超时（client_order_id={client_order_id}）。"
+                f"订单状态未知，可能已被交易所接收。请打开 https://polymarket.com/portfolio "
+                f"核对后再决定下一步，切勿直接点重试。"
+            )
         if isinstance(resp, dict) and resp.get("success") is False:
-            raise RuntimeError(f"交易所拒绝订单: {resp}")
+            raise RuntimeError(f"交易所拒绝订单 (client_order_id={client_order_id}): {resp}")
         await self.push_trade_result(
             "限价卖出",
             position.get("title", ""),
