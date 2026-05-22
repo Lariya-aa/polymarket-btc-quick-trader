@@ -868,6 +868,9 @@ class PolyQuickTrader:
         except ValueError:
             messagebox.showerror("参数错误", "买入金额和最高价必须是数字。")
             return
+        if not (math.isfinite(usdc_amount) and math.isfinite(max_price)):
+            messagebox.showerror("参数错误", "买入金额和最高价必须是有限数值。")
+            return
         if usdc_amount <= 0 or max_price <= 0 or max_price >= 1:
             messagebox.showerror("参数错误", "买入金额必须大于 0，最高价必须在 0 到 1 之间。")
             return
