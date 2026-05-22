@@ -1,0 +1,7 @@
+# Runtime dependencies for poly_mm_pro_max.py.
+# Tested against the versions below; loosen only if you have a reason.
+aiohttp>=3.9,<4.0
+py-clob-client-v2>=0.1.0
+
+# tkinter ships with Python on macOS; not pinned here.
+# Python 3.10+ required (uses int | None style PEP-604 unions).
