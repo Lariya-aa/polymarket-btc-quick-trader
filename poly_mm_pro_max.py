@@ -301,7 +301,7 @@ class PolyQuickTrader:
             self._set_entry(self.ent_quick_usdc, config.get("quick_usdc", "5"))
             self._set_entry(self.ent_quick_max_price, config.get("quick_max_price", "0.60"))
         except Exception as e:
-            logging.error("加载配置文件失败: %s", e)
+            self.logger.error("加载配置文件失败: %s", e)
 
     def _set_entry(self, entry, value):
         entry.delete(0, tk.END)
