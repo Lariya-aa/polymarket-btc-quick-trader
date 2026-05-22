@@ -2,12 +2,14 @@ import asyncio
 import fcntl
 import json
 import logging
+import math
 import os
 import re
 import sys
 import threading
 import time
 import tkinter as tk
+import uuid
 import webbrowser
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -28,6 +30,29 @@ CLOB_HOST = "https://clob.polymarket.com"
 MINIMAX_CHAT_URL = "https://api.minimaxi.com/v1/chat/completions"
 MINIMAX_MODEL = "MiniMax-M2.7"
 CHAIN_ID = 137
+
+# --- BTC short-horizon probability model tuning ---------------------------
+# These constants drive the heuristic in fetch_btc_signal(). They are NOT
+# back-tested — they encode a conservative prior (always pull toward 0.5)
+# and were chosen by hand. Treat the displayed Up/Down probability as a
+# rough nudge, not as edge. UI should label this signal as "未经回测".
+PROB_MOMENTUM_FAST_WEIGHT = 0.50  # short-window return weight in momentum blend
+PROB_MOMENTUM_MID_WEIGHT = 0.35   # mid-window return weight
+PROB_MOMENTUM_SLOW_WEIGHT = 0.15  # long-window return weight (sum = 1.0)
+PROB_VOL_SCALE = 3.0              # divides (momentum+trend+rsi_bias) by vol*this
+PROB_Z_CLAMP = 2.0                # sigmoid input bounded to [-CLAMP, +CLAMP]
+PROB_SHRINK_TOWARD_HALF = 0.6     # final = 0.5 + (sigmoid - 0.5) * this.
+                                  # 0.6 keeps output ~[0.27, 0.73] — a deliberate
+                                  # cap so the GUI never shows extreme confidence
+                                  # on a signal we can't validate.
+
+# --- Order safety ----------------------------------------------------------
+# Order submission wraps the CLOB call in asyncio.wait_for. A timeout does
+# NOT prove the order was rejected — the exchange may have accepted it but
+# the response was lost. We therefore generate a client_order_id per attempt
+# and refuse to silently retry on TimeoutError; the user must reconcile by
+# hand. See buy_quick_market / sell_position_limit.
+ORDER_SUBMIT_TIMEOUT_SECONDS = 25
 
 
 @dataclass
@@ -585,12 +610,16 @@ class PolyQuickTrader:
         recent_returns = returns[-vol_window:]
         mean_return = sum(recent_returns) / len(recent_returns)
         vol = max(0.0001, (sum((x - mean_return) ** 2 for x in recent_returns) / len(recent_returns)) ** 0.5)
-        momentum = 0.50 * ret_fast + 0.35 * ret_mid + 0.15 * ret_slow
+        momentum = (
+            PROB_MOMENTUM_FAST_WEIGHT * ret_fast
+            + PROB_MOMENTUM_MID_WEIGHT * ret_mid
+            + PROB_MOMENTUM_SLOW_WEIGHT * ret_slow
+        )
         trend = (ema_fast / ema_slow - 1.0) if ema_slow else 0.0
         rsi_bias = (rsi - 50.0) / 10000.0
-        z = max(-2.0, min(2.0, (momentum + trend + rsi_bias) / (vol * 3.0)))
-        raw_prob_up = 1.0 / (1.0 + pow(2.718281828, -z))
-        prob_up = 0.5 + (raw_prob_up - 0.5) * 0.6
+        z = max(-PROB_Z_CLAMP, min(PROB_Z_CLAMP, (momentum + trend + rsi_bias) / (vol * PROB_VOL_SCALE)))
+        raw_prob_up = 1.0 / (1.0 + math.exp(-z))
+        prob_up = 0.5 + (raw_prob_up - 0.5) * PROB_SHRINK_TOWARD_HALF
         return {
             "fetched_at": datetime.now().strftime("%H:%M:%S"),
             "price": current,
