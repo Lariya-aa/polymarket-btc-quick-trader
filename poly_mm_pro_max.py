@@ -100,6 +100,7 @@ class PolyQuickTrader:
         self.latest_quick_markets: list[QuickMarket] = []
         self.latest_positions = []
         self.latest_signal = None
+        self.last_positions_fetch_error: str | None = None
 
         self.logger = logging.getLogger("PolyQuickTrader")
         self.logger.setLevel(logging.INFO)
@@ -958,8 +959,14 @@ class PolyQuickTrader:
         return best_ask, tick_size
 
     async def fetch_positions(self):
+        # Sets self.last_positions_fetch_error to None on success or to a
+        # human-readable string on any failure. Callers can read this to
+        # distinguish "user has zero open positions" (success, empty list)
+        # from "the positions API failed" (any non-None error). Returning
+        # only [] in both cases was misleading to the user. Virtue 3 + 9.
         user = self.ent_funder.get().strip()
         if not user:
+            self.last_positions_fetch_error = None
             return []
         params = {
             "user": user,
@@ -972,12 +979,17 @@ class PolyQuickTrader:
             async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=12), headers={"User-Agent": "Mozilla/5.0"}) as session:
                 async with session.get("https://data-api.polymarket.com/positions", params=params) as response:
                     if response.status != 200:
-                        self.logger.warning("持仓接口返回 HTTP %s", response.status)
+                        msg = f"HTTP {response.status}"
+                        self.logger.error("持仓接口返回 %s", msg)
+                        self.last_positions_fetch_error = msg
                         return []
                     data = await response.json()
         except Exception as e:
-            self.logger.warning("读取持仓失败: %s", e)
+            msg = f"{type(e).__name__}: {e}"
+            self.logger.error("读取持仓失败: %s", msg)
+            self.last_positions_fetch_error = msg
             return []
+        self.last_positions_fetch_error = None
         return data if isinstance(data, list) else []
 
     def refresh_positions_button_clicked(self):
@@ -987,7 +999,12 @@ class PolyQuickTrader:
                 positions = loop.run_until_complete(self.fetch_positions())
                 self.latest_positions = positions
                 self.root.after(0, lambda: self.render_positions(positions))
-                self.root.after(0, lambda: self.logger.info("已刷新持仓: %s 条", len(positions)))
+                err = self.last_positions_fetch_error
+                if err:
+                    self.root.after(0, lambda e=err: self.logger.error(
+                        "⚠ 持仓接口失败 (%s) — 上方显示的可能不是最新持仓。下单/卖出前请到 polymarket.com/portfolio 核对。", e))
+                else:
+                    self.root.after(0, lambda: self.logger.info("已刷新持仓: %s 条", len(positions)))
             finally:
                 loop.close()
 
