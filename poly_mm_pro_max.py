@@ -820,7 +820,7 @@ class PolyQuickTrader:
         llm = signal.get("llm")
         if llm:
             if llm.get("error"):
-                text += " | MiniMax失败，已用本地信号"
+                text += " | MiniMax 不可用，仅本地概率"
             else:
                 action_map = {"BUY_UP": "买Up", "BUY_DOWN": "买Down", "NO_TRADE": "不交易"}
                 text += (
