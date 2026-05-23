@@ -787,23 +787,28 @@ class PolyQuickTrader:
 
     def predict_quick_button_clicked(self):
         self.btn_predict_quick.configure(state="disabled", text="判断中...")
-        self.lbl_quick_signal.configure(text=f"正在计算 BTC 短周期概率... {datetime.now().strftime('%H:%M:%S')}")
-        self.logger.info("开始计算 BTC 短周期 AI 概率。")
         selected_market = None
         selected = self.quick_tree.selection()
         if selected:
             idx = int(selected[0])
             if idx < len(self.latest_quick_markets):
                 selected_market = self.latest_quick_markets[idx]
+        category = selected_market.category if selected_market else "BTC"
+        self.lbl_quick_signal.configure(text=f"正在计算 [{category}] 概率... {datetime.now().strftime('%H:%M:%S')}")
+        self.logger.info("开始计算 [%s] AI 概率。", category)
         minimax_key = self.ent_minimax_key.get().strip()
 
         def worker():
             loop = asyncio.new_event_loop()
             try:
-                signal = loop.run_until_complete(self.fetch_btc_signal(selected_market))
+                # Dispatch local signal by category. BTC has a real Binance-
+                # candle-based heuristic; other categories return a minimal
+                # "shell" signal made of market quotes only. Both shapes are
+                # consumed identically by fetch_minimax_prediction and render_signal.
+                signal = loop.run_until_complete(self._local_signal_for(selected_market))
                 signal["llm"] = loop.run_until_complete(self.fetch_minimax_prediction(signal, minimax_key, selected_market)) if minimax_key else None
                 self.latest_signal = signal
-                self.root.after(0, lambda: self.render_btc_signal(signal))
+                self.root.after(0, lambda: self.render_signal(signal))
             except Exception as e:
                 error_text = str(e) or repr(e)
                 self.root.after(0, lambda err=error_text: self.logger.error("AI概率判断失败: %s", err))
@@ -812,6 +817,39 @@ class PolyQuickTrader:
                 self.root.after(0, lambda: self.btn_predict_quick.configure(state="normal", text="AI概率判断"))
 
         threading.Thread(target=worker, daemon=True).start()
+
+    async def _local_signal_for(self, selected_market: PolyMarket | None):
+        """Dispatch the per-category local signal provider.
+
+        Returns a dict with at minimum: category, fetched_at, market_period,
+        market_question. BTC adds the full Binance-derived heuristic
+        (prob_up, ema_fast, rsi, etc). Other categories return only market
+        quote info because we don't have a domain model for them yet —
+        MiniMax does all the actual probability estimation.
+
+        Future categories that want their own local heuristic can branch
+        here without touching the rest of the pipeline.
+        """
+        category = selected_market.category if selected_market else "BTC"
+        if category == "BTC":
+            return await self.fetch_btc_signal(selected_market)
+        # Non-BTC fallback: build a market-only signal. No probability
+        # prediction from our side. MiniMax gets just the market quote.
+        m = selected_market
+        return {
+            "category": category,
+            "fetched_at": datetime.now().strftime("%H:%M:%S"),
+            "market_period": m.subject if m else "",
+            "market_question": m.question if m else "",
+            "horizon_minutes": None,
+            "yes_bid": m.yes_bid if m else None,
+            "yes_ask": m.yes_ask if m else None,
+            "no_bid": m.no_bid if m else None,
+            "no_ask": m.no_ask if m else None,
+            "spread": m.spread if m else None,
+            "volume24h": m.volume24h if m else None,
+            # Leave probability fields absent — render_signal/MiniMax handle that.
+        }
 
     async def fetch_btc_signal(self, selected_market: PolyMarket | None = None):
         horizon_minutes = self.market_horizon_minutes(selected_market)
@@ -902,7 +940,9 @@ class PolyQuickTrader:
         market_block = {}
         if selected_market:
             market_block = {
+                "category": selected_market.category,
                 "question": selected_market.question,
+                "subject": selected_market.subject,
                 "period": selected_market.period,
                 "end_time": selected_market.end_dt.isoformat() if selected_market.end_dt else None,
                 "yes_bid": selected_market.yes_bid,
@@ -926,6 +966,7 @@ class PolyQuickTrader:
                     "content": (
                         "只输出 JSON。不要解释。不要推理过程。不要 markdown。"
                         "JSON keys: prob_up, prob_down, action, confidence, edge_summary, reason, risk。"
+                        "prob_up = Yes 结算概率；BUY_UP = 买 Yes，BUY_DOWN = 买 No。"
                     ),
                 },
                 {
@@ -1054,45 +1095,78 @@ class PolyQuickTrader:
             parsed["confidence"] = "LOW"
         return parsed
 
-    def render_btc_signal(self, signal):
-        direction = "Up" if signal["prob_up"] >= 0.5 else "Down"
-        text = (
-            f"{signal['fetched_at']} | {signal.get('market_period', '')}/{signal.get('horizon_minutes', '--')}m | 本地: {direction} "
-            f"Up {signal['prob_up'] * 100:.1f}% / Down {signal['prob_down'] * 100:.1f}% "
-            f"| 置信 {signal['confidence'] * 100:.0f}% | RSI {signal['rsi']:.1f}"
-        )
+    def render_signal(self, signal):
+        """Render local + LLM signals to the signal label and log panel.
+
+        Tolerant of two signal shapes:
+          - BTC full signal: has prob_up, prob_down, confidence, rsi, ret_*
+            → renders local probability + indicator details.
+          - Non-BTC minimal signal: market quotes only, no prob fields
+            → renders only market info + LLM prediction (if present).
+        """
+        category = signal.get("category", "BTC")
         llm = signal.get("llm")
+        has_local_prob = "prob_up" in signal
+
+        if has_local_prob:
+            direction = "Yes" if signal["prob_up"] >= 0.5 else "No"
+            text = (
+                f"{signal['fetched_at']} | [{category}] {signal.get('market_period', '')}/{signal.get('horizon_minutes', '--')}m "
+                f"| 本地: {direction} | Yes {signal['prob_up'] * 100:.1f}% / No {signal['prob_down'] * 100:.1f}% "
+                f"| 置信 {signal['confidence'] * 100:.0f}% | RSI {signal['rsi']:.1f}"
+            )
+        else:
+            text = (
+                f"{signal['fetched_at']} | [{category}] {signal.get('market_question', '')[:40]} "
+                f"| 盘口 Yes {signal.get('yes_bid', 0):.2f}/{signal.get('yes_ask', 0):.2f} "
+                f"No {signal.get('no_bid', 0):.2f}/{signal.get('no_ask', 0):.2f}"
+            )
+
         if llm:
             if llm.get("error"):
-                text += " | MiniMax 不可用，仅本地概率"
+                text += " | MiniMax 不可用" + ("，仅本地概率" if has_local_prob else "")
             else:
-                action_map = {"BUY_UP": "买Up", "BUY_DOWN": "买Down", "NO_TRADE": "不交易"}
+                action_map = {"BUY_UP": "买Yes", "BUY_DOWN": "买No", "NO_TRADE": "不交易"}
                 text += (
-                    f" | MiniMax: Up {llm['prob_up'] * 100:.1f}% / Down {llm['prob_down'] * 100:.1f}% "
+                    f" | MiniMax: Yes {llm['prob_up'] * 100:.1f}% / No {llm['prob_down'] * 100:.1f}% "
                     f"| {action_map.get(llm.get('action'), '不交易')} | {llm.get('confidence', 'LOW')}"
                 )
         self.lbl_quick_signal.configure(text=text)
-        self.logger.info(
-            "本地概率[%s/%sm]: Up %.1f%% / Down %.1f%%，置信 %.0f%%，%sm %.3f%%，%sm %.3f%%，%sm %.3f%%，RSI %.1f",
-            signal.get("market_period", ""),
-            signal.get("horizon_minutes", ""),
-            signal["prob_up"] * 100,
-            signal["prob_down"] * 100,
-            signal["confidence"] * 100,
-            signal["fast_window"],
-            signal["ret_fast"] * 100,
-            signal["mid_window"],
-            signal["ret_mid"] * 100,
-            signal["slow_window"],
-            signal["ret_slow"] * 100,
-            signal["rsi"],
-        )
+
+        if has_local_prob:
+            self.logger.info(
+                "本地概率[%s/%sm]: Yes %.1f%% / No %.1f%%，置信 %.0f%%，%sm %.3f%%，%sm %.3f%%，%sm %.3f%%，RSI %.1f",
+                signal.get("market_period", ""),
+                signal.get("horizon_minutes", ""),
+                signal["prob_up"] * 100,
+                signal["prob_down"] * 100,
+                signal["confidence"] * 100,
+                signal["fast_window"],
+                signal["ret_fast"] * 100,
+                signal["mid_window"],
+                signal["ret_mid"] * 100,
+                signal["slow_window"],
+                signal["ret_slow"] * 100,
+                signal["rsi"],
+            )
+        else:
+            self.logger.info(
+                "盘口[%s]: %s | Yes %.2f/%.2f | No %.2f/%.2f | 24h量=%.0f",
+                category,
+                signal.get("market_question", "")[:60],
+                signal.get("yes_bid") or 0,
+                signal.get("yes_ask") or 0,
+                signal.get("no_bid") or 0,
+                signal.get("no_ask") or 0,
+                signal.get("volume24h") or 0,
+            )
+
         if llm:
             if llm.get("error"):
                 self.logger.warning("MiniMax 综合预测不可用: %s", llm["error"])
             else:
                 self.logger.info(
-                    "MiniMax综合: Up %.1f%% / Down %.1f%% | 动作=%s | 置信=%s | %s | 风险=%s | tokens=%s",
+                    "MiniMax综合: Yes %.1f%% / No %.1f%% | 动作=%s | 置信=%s | %s | 风险=%s | tokens=%s",
                     llm["prob_up"] * 100,
                     llm["prob_down"] * 100,
                     llm.get("action"),
