@@ -29,6 +29,7 @@ def _market(**overrides):
         "closed": False,
         "acceptingOrders": True,
         "clobTokenIds": '["yes-token-id", "no-token-id"]',
+        "outcomes": '["Yes", "No"]',
         "bestBid": "0.45",
         "bestAsk": "0.55",
         "orderPriceMinTickSize": "0.01",
@@ -119,3 +120,71 @@ def test_period_falls_back_to_question(bag):
 
 def test_period_unknown_returns_question_mark(bag):
     assert bag.quick_period_from_slug_or_title("some-slug", "completely unrelated") == "?"
+
+
+# ── BLOCKER C2 (Codex pass-2): outcomes must be Yes/No ────────────────────
+
+
+def test_rejects_team_vs_team_outcomes(bag):
+    """Markets like Knicks vs Cavaliers have outcomes=['Knicks','Cavaliers'].
+    The yes_id/no_id positional convention would silently route a
+    "买 Yes" click into the Knicks token. Reject these instead."""
+    out = bag.quick_market_candidate(
+        _event(),
+        _market(question="Will Bitcoin go up or down?",
+                outcomes='["Knicks", "Cavaliers"]'),
+        _NOW,
+    )
+    assert out is None
+
+
+def test_rejects_three_outcome_market(bag):
+    out = bag.quick_market_candidate(
+        _event(),
+        _market(question="Will Bitcoin go up or down?",
+                outcomes='["Yes", "No", "Maybe"]'),
+        _NOW,
+    )
+    assert out is None
+
+
+def test_rejects_swapped_yes_no_order(bag):
+    # Position-sensitive: outcomes must be exactly ["Yes","No"] in this
+    # order. ["No","Yes"] would swap the meaning of our yes_id/no_id
+    # token assignment.
+    out = bag.quick_market_candidate(
+        _event(),
+        _market(question="Will Bitcoin go up or down?",
+                outcomes='["No", "Yes"]'),
+        _NOW,
+    )
+    assert out is None
+
+
+def test_accepts_case_insensitive_yes_no(bag):
+    out = bag.quick_market_candidate(
+        _event(),
+        _market(question="Will Bitcoin go up or down?",
+                outcomes='["yes", "NO"]'),
+        _NOW,
+    )
+    assert out is not None
+
+
+def test_rejects_missing_outcomes_field(bag):
+    out = bag.quick_market_candidate(
+        _event(),
+        _market(question="Will Bitcoin go up or down?", outcomes=None),
+        _NOW,
+    )
+    assert out is None
+
+
+def test_rejects_unparseable_outcomes(bag):
+    out = bag.quick_market_candidate(
+        _event(),
+        _market(question="Will Bitcoin go up or down?",
+                outcomes="this is not json at all"),
+        _NOW,
+    )
+    assert out is None

@@ -54,6 +54,7 @@ def _basic_event_market():
         "closed": False,
         "acceptingOrders": True,
         "clobTokenIds": '["yes-id", "no-id"]',
+        "outcomes": '["Yes", "No"]',
         "bestBid": "0.4",
         "bestAsk": "0.6",
         "endDate": "2099-01-01T00:00:00Z",
@@ -83,6 +84,7 @@ def test_build_market_btc_fills_period(bag):
         "closed": False,
         "acceptingOrders": True,
         "clobTokenIds": '["yes-id", "no-id"]',
+        "outcomes": '["Yes", "No"]',
         "bestBid": "0.45",
         "bestAsk": "0.55",
         "slug": "btc-updown-5m-1700000000",
@@ -122,6 +124,7 @@ def test_fetch_tag_markets_passes_tag_slug_to_gamma(bag, monkeypatch):
                 {
                     "active": True, "closed": False, "acceptingOrders": True,
                     "clobTokenIds": '["yes", "no"]',
+                    "outcomes": '["Yes", "No"]',
                     "bestBid": "0.3", "bestAsk": "0.4",
                     "endDate": "2099-01-01T00:00:00Z",
                     "question": "Will Lakers win?", "slug": "nba-event-1",
@@ -159,6 +162,7 @@ def test_fetch_tag_markets_filters_closed_markets(bag, monkeypatch):
                 {
                     "active": True, "closed": True, "acceptingOrders": True,
                     "clobTokenIds": '["a","b"]',
+                    "outcomes": '["Yes", "No"]',
                     "bestBid": "0.4", "bestAsk": "0.5",
                     "endDate": "2099-01-01T00:00:00Z",
                     "question": "x?", "slug": "closed-evt",
@@ -181,7 +185,8 @@ def test_fetch_newly_listed_applies_volume_floor(bag, monkeypatch):
             "endDate": "2099-01-01T00:00:00Z",
             "markets": [
                 {"active": True, "closed": False, "acceptingOrders": True,
-                 "clobTokenIds": '["a","b"]', "bestBid": "0.4", "bestAsk": "0.5",
+                 "clobTokenIds": '["a","b"]', "outcomes": '["Yes","No"]',
+                 "bestBid": "0.4", "bestAsk": "0.5",
                  "endDate": "2099-01-01T00:00:00Z", "question": "?", "slug": "dust"}
             ],
         },
@@ -190,7 +195,8 @@ def test_fetch_newly_listed_applies_volume_floor(bag, monkeypatch):
             "endDate": "2099-01-01T00:00:00Z",
             "markets": [
                 {"active": True, "closed": False, "acceptingOrders": True,
-                 "clobTokenIds": '["a","b"]', "bestBid": "0.4", "bestAsk": "0.5",
+                 "clobTokenIds": '["a","b"]', "outcomes": '["Yes","No"]',
+                 "bestBid": "0.4", "bestAsk": "0.5",
                  "endDate": "2099-01-01T00:00:00Z", "question": "?", "slug": "real"}
             ],
         },

@@ -703,16 +703,28 @@ class PolyQuickTrader:
         """Shared PolyMarket constructor used by every category-specific
         scanner. Returns None if the raw event/market dict fails the
         common preconditions: must be open, must have two clobTokenIds,
-        must have a sensible bid/ask pair.
+        must have a sensible bid/ask pair, AND must be a binary
+        Yes/No market.
 
         Category-specific filtering (e.g. "is this a BTC up/down market?")
         is the caller's job — by the time we get here, the raw market is
         assumed to belong in the requested category.
+
+        Yes/No gating: clobTokenIds is a positional pair [token_a,
+        token_b]. We previously assigned yes_id=token_ids[0]/
+        no_id=token_ids[1] without verifying the outcomes labels. For
+        markets with outcomes like ["Knicks", "Cavaliers"] this routes
+        a user clicking "买 Yes" into the Knicks token, which is
+        misleading. We now require the market's `outcomes` field to be
+        exactly ["Yes", "No"] (case-insensitive, order-sensitive) and
+        reject otherwise.
         """
         if market.get("closed") is True or market.get("active") is False or market.get("acceptingOrders") is False:
             return None
         token_ids = self._parse_token_ids(market.get("clobTokenIds"))
         if len(token_ids) < 2:
+            return None
+        if not self._is_yes_no_market(market):
             return None
         question = market.get("question") or event.get("title") or ""
         slug = market.get("slug") or event.get("slug") or ""
@@ -1654,6 +1666,38 @@ class PolyQuickTrader:
             return [str(x) for x in parsed]
         except Exception:
             return []
+
+    def _is_yes_no_market(self, market: dict) -> bool:
+        """Verify a Gamma market's `outcomes` are exactly ["Yes", "No"]
+        (case-insensitive, order-sensitive).
+
+        Gamma stores outcomes as a JSON string like '["Yes", "No"]' or
+        '["Knicks", "Cavaliers"]'. We refuse to map team-name markets
+        through the yes_id/no_id positional convention because the UI
+        labels the buy buttons "买 Yes" / "买 No" — a Knicks-vs-Cavs
+        market would silently route a Yes-buyer into the Knicks token,
+        which is dishonest. BTC up/down markets do come through with
+        outcomes=["Yes","No"] (Yes = price will go up), so this filter
+        leaves the existing primary use case intact.
+        """
+        raw = market.get("outcomes")
+        if isinstance(raw, str):
+            try:
+                outcomes = json.loads(raw)
+            except (ValueError, TypeError):
+                return False
+        elif isinstance(raw, list):
+            outcomes = raw
+        else:
+            return False
+        if len(outcomes) != 2:
+            return False
+        try:
+            a = str(outcomes[0]).strip().lower()
+            b = str(outcomes[1]).strip().lower()
+        except (TypeError, ValueError):
+            return False
+        return a == "yes" and b == "no"
 
     def _parse_datetime(self, raw):
         if not raw:
