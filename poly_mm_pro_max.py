@@ -520,6 +520,15 @@ class PolyQuickTrader:
             self.logger.error("未知类目: %s", label)
             return
         category_code, method_name, kwargs = CATEGORIES[label]
+        # Sanity: the tuple's category_code must agree with kwargs["category"]
+        # if both are present, so adding a new CATEGORIES entry can't
+        # silently disagree with itself.
+        if "category" in kwargs and kwargs["category"] != category_code:
+            self.logger.error(
+                "CATEGORIES[%s] 不一致: code=%s vs kwargs.category=%s",
+                label, category_code, kwargs["category"],
+            )
+            return
         fetcher = getattr(self, method_name, None)
         if not callable(fetcher):
             self.logger.error("找不到 fetcher 方法: %s", method_name)
@@ -742,7 +751,7 @@ class PolyQuickTrader:
             yes_id=token_ids[0],
             no_id=token_ids[1],
             tick_size=str(market.get("orderPriceMinTickSize") or "0.01"),
-            period=self.quick_period_from_slug_or_title(slug, question) if category == "BTC" else "",
+            period=subject if category == "BTC" else "",
             end_dt=end_dt,
             ended=bool(end_dt and end_dt <= now),
             yes_bid=best_bid,

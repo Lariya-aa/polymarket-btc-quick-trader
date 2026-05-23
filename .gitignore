@@ -3,6 +3,9 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 
+# ai-trio / wf-goal workspace — review outputs, plans, event logs
+.ai-cycle/
+
 # Local secrets and runtime state
 .env
 .poly_mm_env

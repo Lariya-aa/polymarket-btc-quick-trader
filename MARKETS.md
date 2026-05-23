@@ -185,7 +185,7 @@ class PolyMarket:
 ## 怎么验证
 
 ```bash
-.venv/bin/pytest tests/ -v          # 78 passed
+.venv/bin/pytest tests/ -v          # 看输出最后一行的 N passed
 .venv/bin/python poly_mm_pro_max.py  # 启动 GUI
 # 依次切换 5 个类目 + 点"扫描"，每个都应返回若干市场
 # AI按钮：BTC 走老路；其它走 MiniMax-only

@@ -22,7 +22,7 @@ python3 -m venv .venv
 .venv/bin/pytest tests/ -v
 ```
 
-期望：**全部 PASS**（67+ 测试）。出包前不绿不打。
+期望：**全部 PASS**（具体测试数 `pytest tests/ -q` 末行会写）。出包前不绿不打。
 
 ### 0.2 本机用 source 模式启动一次
 

@@ -20,7 +20,7 @@ python3 -m venv .venv
 .venv/bin/pip install -r requirements-dev.txt
 
 # 3. 跑测试
-.venv/bin/pytest tests/ -v          # 期望: 59 passed
+.venv/bin/pytest tests/ -v          # 期望: 全部 PASS (cnt 看末行)
 
 # 4. 手测 GUI（这步我没法替你做）
 ./PolyMarketMaker.command           # 启动后只点"扫描短周期"+"AI概率判断"
@@ -148,7 +148,7 @@ python3 -m venv .venv
   - 信号数学（window_return、ema、rsi、market_horizon_minutes）：10
   - quick_market_candidate（13 个边界 case）：13
   - compact_signal + generated_btc_updown_slugs：6
-- 跑：`.venv/bin/pytest tests/` → **59 passed in 0.10s**
+- 跑：`.venv/bin/pytest tests/` → 全部 PASS（具体数量看 pytest 末行；本节最初版本是 59 个，后续 commit 持续追加）
 
 ---
 
@@ -215,7 +215,7 @@ git branch -d optimization/virtues-pass
 
 - **commits**: 10
 - **文件变动**: +2 个 shell 改动 + 1 个 Python 文件改动 + 7 个新文件
-- **新增测试**: 59 个，全部通过，0.10s 跑完
+- **新增测试**: 见 `pytest tests/ -q` 末行；该 commit 后为 59 个，后续 commit 持续追加
 - **未做**: 3 项（拆文件、Session 复用、worker dedup），见上表
 - **风险最高的 commit**: `a294088`，需要你最小金额手测一次买/卖
 

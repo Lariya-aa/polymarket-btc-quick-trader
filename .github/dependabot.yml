@@ -1,0 +1,16 @@
+version: 2
+updates:
+  # GitHub Actions tracked here ride on mutable tags (@v4, @v2) in
+  # .github/workflows/build.yml. Dependabot raises a PR when an action
+  # publishes a new minor/patch so we can review the diff before
+  # bumping. For higher rigor (e.g. wide public distribution), pin
+  # action references to commit SHAs and use Dependabot's
+  # commit-message conventions to auto-PR security updates only.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - ci

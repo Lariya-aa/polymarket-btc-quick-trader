@@ -7,6 +7,12 @@ name: Build releases
 # Outputs as workflow artifacts (and release assets on tags):
 #   PolyMarketTrader-macos.dmg
 #   PolyMarketTrader-windows.zip   (zip of the onedir folder)
+#
+# Action references use mutable @vN tags (e.g. actions/checkout@v4).
+# Dependabot (.github/dependabot.yml) watches them and raises a PR when
+# a new version is published, so we get review-before-bump rather than
+# silent SHA drift. For widely-distributed binaries, pin to commit
+# SHAs instead — Kimi flagged the @vN choice as a security concern.
 
 on:
   push:
