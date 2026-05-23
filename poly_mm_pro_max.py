@@ -1630,7 +1630,20 @@ class PolyQuickTrader:
         positions = await self.fetch_positions()
         self.latest_positions = positions
         self.root.after(0, lambda positions=positions: self.render_positions(positions))
-        pnl_block = self.positions_pnl_markdown(positions, market_title, market_slug)
+        # CRITICAL: fetch_positions can succeed (HTTP 200, list) or fail
+        # (set self.last_positions_fetch_error and return []). On failure
+        # the PnL block would otherwise say "当前没有可见持仓" which a
+        # user reading the ServerChan notification could mistake for
+        # "my trade vaporized". Surface the error inline instead.
+        positions_err = self.last_positions_fetch_error
+        if positions_err:
+            pnl_block = (
+                "### 当前持仓盈亏\n\n"
+                f"⚠ 持仓接口失败 ({positions_err})，无法显示成交后 PnL。"
+                f" 请到 https://polymarket.com/portfolio 直接核对。"
+            )
+        else:
+            pnl_block = self.positions_pnl_markdown(positions, market_title, market_slug)
         content = (
             "### Polymarket 交易提交结果\n\n"
             f"- 操作: `{action}`\n"

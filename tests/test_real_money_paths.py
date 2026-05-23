@@ -408,3 +408,70 @@ def test_display_direction_maps_down_to_no(bag):
 
 def test_display_direction_passthrough_unknown(bag):
     assert bag._display_direction("FOO") == "FOO"
+
+
+# ── BLOCKER C-P3-2 (Codex pass-3): push_trade_result must honor
+#                                    last_positions_fetch_error ──────────
+
+
+def test_push_trade_result_surfaces_positions_api_failure(trader, monkeypatch):
+    """After a successful order, push_trade_result calls fetch_positions
+    to render PnL. If that fetch fails (last_positions_fetch_error set),
+    the markdown body must surface the error — not silently say
+    "当前没有可见持仓", which a user reading the ServerChan
+    notification could mistake for "my trade vaporized"."""
+    pushed = {}
+
+    async def fake_fetch(self):
+        # Simulate fetch_positions hitting an API error path.
+        self.last_positions_fetch_error = "HTTP 502"
+        return []
+
+    async def fake_push(self, title, content):
+        pushed["title"] = title
+        pushed["content"] = content
+
+    monkeypatch.setattr(M.PolyQuickTrader, "fetch_positions", fake_fetch)
+    monkeypatch.setattr(M.PolyQuickTrader, "push_to_server_chan", fake_push)
+    trader.last_positions_fetch_error = None  # start clean
+    trader.root = MagicMock()  # so render_positions dispatch via root.after works
+
+    asyncio.run(trader.push_trade_result(
+        action="快速买入", market_title="Will BTC go up?",
+        direction="UP", size=10.0, price=0.5,
+        resp={"orderID": "0xabc", "success": True},
+        market_slug="btc-x",
+    ))
+    body = pushed["content"]
+    assert "持仓接口失败" in body
+    assert "502" in body
+    assert "当前没有可见持仓" not in body, \
+        "must not show the empty-positions message when API actually failed"
+
+
+def test_push_trade_result_uses_pnl_when_positions_ok(trader, monkeypatch):
+    """Sanity: when fetch_positions succeeds (error flag None), the
+    normal positions_pnl_markdown is used."""
+    pushed = {}
+
+    async def fake_fetch(self):
+        self.last_positions_fetch_error = None
+        return []  # genuinely zero positions
+
+    async def fake_push(self, title, content):
+        pushed["content"] = content
+
+    monkeypatch.setattr(M.PolyQuickTrader, "fetch_positions", fake_fetch)
+    monkeypatch.setattr(M.PolyQuickTrader, "push_to_server_chan", fake_push)
+    trader.last_positions_fetch_error = None
+    trader.root = MagicMock()
+
+    asyncio.run(trader.push_trade_result(
+        action="快速买入", market_title="Will BTC go up?",
+        direction="UP", size=10.0, price=0.5,
+        resp={"orderID": "0xabc"},
+        market_slug="btc-x",
+    ))
+    body = pushed["content"]
+    assert "当前没有可见持仓" in body
+    assert "持仓接口失败" not in body
