@@ -71,6 +71,20 @@ ORDER_SUBMIT_TIMEOUT_SECONDS = 25
 MINIMAX_PRIMARY_TOKEN_BUDGET = 2000
 MINIMAX_REPAIR_TOKEN_BUDGET = 800
 
+# --- Categories registry ---------------------------------------------------
+# Each entry is the UI label shown in the dropdown, mapped to a tuple:
+#   (category_code, fetcher_method_name, fetcher_kwargs_dict)
+# The fetcher_method_name is resolved on `self` at click time so the
+# fetcher can stay an async method on PolyQuickTrader. To add a new
+# category, append one entry here — UI dispatch picks it up automatically.
+CATEGORIES = {
+    "BTC – 短周期":   ("BTC", "fetch_quick_btc_markets",    {}),
+    "NBA":            ("NBA", "fetch_tag_markets",          {"tag_slug": "nba",            "category": "NBA", "subject_label": "NBA"}),
+    "NFL":            ("NFL", "fetch_tag_markets",          {"tag_slug": "nfl",            "category": "NFL", "subject_label": "NFL"}),
+    "世界杯":         ("WC",  "fetch_tag_markets",          {"tag_slug": "fifa-world-cup", "category": "WC",  "subject_label": "WC"}),
+    "新上线盘口":     ("NEW", "fetch_newly_listed_markets", {}),
+}
+
 
 @dataclass
 class PolyMarket:
@@ -80,6 +94,12 @@ class PolyMarket:
     UI-shorthand Up/Down that this app started with for BTC-only use.
     For BTC-Up/Down markets, Yes == "BTC will go up" and No == "BTC will
     go down" — same tokens, just different display labels in the UI.
+
+    `category` and `subject` were added when the app expanded beyond BTC:
+        category ∈ {"BTC", "NBA", "NFL", "WC", "NEW"}
+        subject  = short label shown in the first table column. For BTC
+                   it's the period ("5m"/"15m"/...); for sport markets
+                   it's a compact form of the matchup or league tag.
     """
     slug: str
     event_slug: str
@@ -96,6 +116,8 @@ class PolyMarket:
     no_ask: float
     spread: float
     volume24h: float
+    category: str = "BTC"
+    subject: str = ""
 
 
 def user_data_dir() -> str:
@@ -537,6 +559,77 @@ class PolyQuickTrader:
         markets.sort(key=lambda item: (item.ended, item.end_dt or datetime.max.replace(tzinfo=timezone.utc)))
         return markets[:20]
 
+    async def fetch_tag_markets(self, tag_slug: str, category: str, subject_label: str | None = None, limit: int = 30):
+        """Generic discovery for any Polymarket tag (NBA, NFL, fifa-world-cup, ...).
+        Returns up to `limit` PolyMarkets in an open state, sorted by end-date ascending.
+
+        `subject_label` overrides the per-market subject column. Defaults to the
+        category short name (e.g. "NBA") when not provided.
+        """
+        url = "https://gamma-api.polymarket.com/events"
+        params = {
+            "tag_slug": tag_slug,
+            "closed": "false",
+            "limit": str(limit),
+            "order": "startDate",
+            "ascending": "true",
+        }
+        events = await self.fetch_json(url, params=params)
+        if not isinstance(events, list):
+            self.logger.warning("标签 %s 返回非列表数据，跳过", tag_slug)
+            return []
+        markets: list[PolyMarket] = []
+        now = datetime.now(timezone.utc)
+        for event in events:
+            if not isinstance(event, dict):
+                continue
+            label = subject_label or category
+            for market in event.get("markets") or []:
+                item = self._build_market(event, market, now, category=category, subject=label)
+                if item:
+                    markets.append(item)
+        markets.sort(key=lambda item: (item.ended, item.end_dt or datetime.max.replace(tzinfo=timezone.utc)))
+        return markets[:limit]
+
+    async def fetch_newly_listed_markets(self, limit: int = 30, min_volume_24h: float = 100.0):
+        """Recently-listed (createdAt desc) Polymarket events with a small
+        volume floor so dust markets don't dominate the list.
+
+        Returns up to `limit` PolyMarkets across any category. `subject`
+        is the event slug's first hyphen-prefixed token (best-effort
+        category hint) since we don't know the tag without an extra API
+        call per event.
+        """
+        url = "https://gamma-api.polymarket.com/events"
+        params = {
+            "closed": "false",
+            "limit": str(limit * 3),  # over-fetch so the volume filter still gives us `limit` rows
+            "order": "createdAt",
+            "ascending": "false",
+        }
+        events = await self.fetch_json(url, params=params)
+        if not isinstance(events, list):
+            self.logger.warning("新上线接口返回非列表数据，跳过")
+            return []
+        markets: list[PolyMarket] = []
+        now = datetime.now(timezone.utc)
+        for event in events:
+            if not isinstance(event, dict):
+                continue
+            if self._float_or_zero(event.get("volume24hr")) < min_volume_24h:
+                continue
+            ev_slug = event.get("slug") or ""
+            subject_hint = ev_slug.split("-", 1)[0].upper()[:6] if ev_slug else "NEW"
+            for market in event.get("markets") or []:
+                item = self._build_market(event, market, now, category="NEW", subject=subject_hint)
+                if item:
+                    markets.append(item)
+            if len(markets) >= limit:
+                break
+        # Newest first, instead of soonest-ending.
+        markets.sort(key=lambda item: item.end_dt or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+        return markets[:limit]
+
     def generated_btc_updown_slugs(self):
         # Fallback: when scraping polymarket.com/crypto/bitcoin yields no
         # event links (HTML structure changed, regional block, etc.) we
@@ -555,6 +648,31 @@ class PolyQuickTrader:
         return slugs
 
     def quick_market_candidate(self, event: dict, market: dict, now: datetime):
+        # BTC short-cycle gate: only keep markets whose question is the
+        # "BTC up or down" phrasing this scanner is meant for. Then build
+        # a PolyMarket via the shared constructor.
+        question = market.get("question") or event.get("title") or ""
+        slug = market.get("slug") or event.get("slug") or ""
+        if "bitcoin" not in question.lower() and "btc" not in slug.lower():
+            return None
+        if "up" not in question.lower() or "down" not in question.lower():
+            return None
+        return self._build_market(
+            event, market, now,
+            category="BTC",
+            subject=self.quick_period_from_slug_or_title(slug, question),
+        )
+
+    def _build_market(self, event: dict, market: dict, now: datetime, category: str, subject: str):
+        """Shared PolyMarket constructor used by every category-specific
+        scanner. Returns None if the raw event/market dict fails the
+        common preconditions: must be open, must have two clobTokenIds,
+        must have a sensible bid/ask pair.
+
+        Category-specific filtering (e.g. "is this a BTC up/down market?")
+        is the caller's job — by the time we get here, the raw market is
+        assumed to belong in the requested category.
+        """
         if market.get("closed") is True or market.get("active") is False or market.get("acceptingOrders") is False:
             return None
         token_ids = self._parse_token_ids(market.get("clobTokenIds"))
@@ -562,10 +680,6 @@ class PolyQuickTrader:
             return None
         question = market.get("question") or event.get("title") or ""
         slug = market.get("slug") or event.get("slug") or ""
-        if "bitcoin" not in question.lower() and "btc" not in slug.lower():
-            return None
-        if "up" not in question.lower() or "down" not in question.lower():
-            return None
 
         end_dt = self._parse_datetime(market.get("endDate") or event.get("endDate"))
         best_bid = self._optional_float(market.get("bestBid"))
@@ -580,7 +694,7 @@ class PolyQuickTrader:
             yes_id=token_ids[0],
             no_id=token_ids[1],
             tick_size=str(market.get("orderPriceMinTickSize") or "0.01"),
-            period=self.quick_period_from_slug_or_title(slug, question),
+            period=self.quick_period_from_slug_or_title(slug, question) if category == "BTC" else "",
             end_dt=end_dt,
             ended=bool(end_dt and end_dt <= now),
             yes_bid=best_bid,
@@ -589,6 +703,8 @@ class PolyQuickTrader:
             no_ask=min(1.0, 1.0 - best_bid),
             spread=best_ask - best_bid,
             volume24h=self._float_or_zero(market.get("volume24hrClob") or market.get("volume24hr")),
+            category=category,
+            subject=subject,
         )
 
     def quick_period_from_slug_or_title(self, slug: str, question: str):
