@@ -58,7 +58,19 @@ class _PureBag:
     redirected to the real class; callable attributes get bound to this
     bag. Lets tests write `bag.clamp_price(0.5, '0.01')` even though
     clamp_price internally calls `self.price_decimals(...)`.
+
+    Some methods log via `self.logger.warning/info/error`. We attach a
+    real logger so those calls don't blow up under test. The handlers
+    drop everything; tests don't assert on log lines.
     """
+
+    def __init__(self):
+        import logging
+        self.logger = logging.getLogger("test_bag")
+        # Silence test-run output. Tests don't assert on log content;
+        # for those that need to (e.g. via caplog) pytest's caplog
+        # fixture still works because we use the standard logging stack.
+        self.logger.addHandler(logging.NullHandler())
 
     def __getattr__(self, name):
         attr = getattr(M.PolyQuickTrader, name, None)
