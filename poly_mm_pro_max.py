@@ -1086,9 +1086,30 @@ class PolyQuickTrader:
         if not cleaned.startswith("{"):
             raise ValueError("MiniMax 未返回 JSON 对象")
         parsed = json.loads(cleaned)
-        prob_up = min(max(float(parsed.get("prob_up", 0.5)), 0.0), 1.0)
+        # Coerce and clamp prob_up to [0,1]. Reject non-finite values
+        # (NaN, inf, -inf) outright — they survive float() and min/max,
+        # then propagate into UI / order sizing as NaN. Treat as
+        # NO_TRADE so the user never sees a malformed prediction.
+        try:
+            raw_up = float(parsed.get("prob_up", 0.5))
+        except (TypeError, ValueError):
+            raw_up = 0.5
+        if not math.isfinite(raw_up):
+            parsed["prob_up"] = 0.5
+            parsed["prob_down"] = 0.5
+            parsed["action"] = "NO_TRADE"
+            parsed["confidence"] = "LOW"
+            parsed["reason"] = "MiniMax 返回非有限概率，已忽略"
+            return parsed
+        prob_up = min(max(raw_up, 0.0), 1.0)
+        try:
+            raw_down = float(parsed.get("prob_down", 1.0 - prob_up))
+        except (TypeError, ValueError):
+            raw_down = 1.0 - prob_up
+        if not math.isfinite(raw_down):
+            raw_down = 1.0 - prob_up
         parsed["prob_up"] = prob_up
-        parsed["prob_down"] = min(max(float(parsed.get("prob_down", 1.0 - prob_up)), 0.0), 1.0)
+        parsed["prob_down"] = min(max(raw_down, 0.0), 1.0)
         if parsed.get("action") not in {"BUY_UP", "BUY_DOWN", "NO_TRADE"}:
             parsed["action"] = "NO_TRADE"
         if parsed.get("confidence") not in {"LOW", "MEDIUM", "HIGH"}:

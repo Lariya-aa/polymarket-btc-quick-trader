@@ -63,3 +63,38 @@ def test_only_think_block_raises(bag):
 def test_prob_down_defaults_to_complement(bag):
     out = bag.parse_minimax_json('{"prob_up": 0.6, "action": "BUY_UP"}')
     assert out["prob_down"] == pytest.approx(0.4)
+
+
+def test_nan_prob_forces_no_trade(bag):
+    # MiniMax has been observed to emit "nan" / "inf" as strings. float()
+    # accepts them, min/max passes them through, and they then propagate
+    # as NaN into UI labels and (worse) order sizing. Parser must
+    # downgrade to NO_TRADE + 50/50 prob.
+    import math
+    out = bag.parse_minimax_json('{"prob_up": "nan", "action": "BUY_UP"}')
+    assert math.isfinite(out["prob_up"])
+    assert math.isfinite(out["prob_down"])
+    assert out["action"] == "NO_TRADE"
+    assert out["confidence"] == "LOW"
+    assert "非有限" in out.get("reason", "")
+
+
+def test_inf_prob_forces_no_trade(bag):
+    import math
+    out = bag.parse_minimax_json('{"prob_up": "inf", "action": "BUY_DOWN"}')
+    assert math.isfinite(out["prob_up"])
+    assert out["action"] == "NO_TRADE"
+
+
+def test_negative_inf_prob_forces_no_trade(bag):
+    import math
+    out = bag.parse_minimax_json('{"prob_up": "-inf", "action": "BUY_UP"}')
+    assert math.isfinite(out["prob_up"])
+    assert out["action"] == "NO_TRADE"
+
+
+def test_garbage_prob_string_falls_back_to_half(bag):
+    # Non-numeric, non-special-float garbage: parser should fall back
+    # to the 0.5 default rather than crashing.
+    out = bag.parse_minimax_json('{"prob_up": "hello", "action": "BUY_UP"}')
+    assert out["prob_up"] == 0.5
