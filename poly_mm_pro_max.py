@@ -240,12 +240,20 @@ class PolyQuickTrader:
         self.ent_minimax_key = ttk.Entry(api_frame, show="*", width=82)
         self.ent_minimax_key.grid(row=4, column=1, columnspan=3, sticky="w", pady=3, padx=5)
 
-        quick_frame = ttk.LabelFrame(self.root, text=" 2. BTC 短周期快速买卖 ", padding=10)
+        quick_frame = ttk.LabelFrame(self.root, text=" 2. 市场列表（多类目） ", padding=10)
         quick_frame.pack(fill="x", padx=15, pady=5)
 
         quick_ctrl_frame = ttk.Frame(quick_frame)
         quick_ctrl_frame.pack(fill="x", pady=(0, 8))
-        self.btn_scan_quick = ttk.Button(quick_ctrl_frame, text="扫描短周期", width=14, command=self.scan_quick_button_clicked)
+        ttk.Label(quick_ctrl_frame, text="类目:").pack(side="left", padx=(0, 4))
+        # Category Combobox controls which fetcher runs on "扫描". The keys
+        # of CATEGORIES are the human-readable labels shown here; dispatch
+        # happens in scan_quick_button_clicked.
+        self.cbo_category = ttk.Combobox(quick_ctrl_frame, width=18, state="readonly")
+        self.cbo_category["values"] = tuple(CATEGORIES.keys())
+        self.cbo_category.set(next(iter(CATEGORIES)))  # default = first entry (BTC)
+        self.cbo_category.pack(side="left", padx=(0, 8))
+        self.btn_scan_quick = ttk.Button(quick_ctrl_frame, text="扫描", width=10, command=self.scan_quick_button_clicked)
         self.btn_scan_quick.pack(side="left", padx=4)
         self.btn_predict_quick = ttk.Button(quick_ctrl_frame, text="AI概率判断", width=14, command=self.predict_quick_button_clicked)
         self.btn_predict_quick.pack(side="left", padx=4)
@@ -257,9 +265,12 @@ class PolyQuickTrader:
         self.ent_quick_max_price = ttk.Entry(quick_ctrl_frame, width=8)
         self.ent_quick_max_price.insert(0, "0.60")
         self.ent_quick_max_price.pack(side="left", padx=4)
-        self.btn_buy_up = ttk.Button(quick_ctrl_frame, text="买 Up", width=10, command=lambda: self.buy_selected_quick_market("UP"))
+        # Buy buttons use Polymarket-native Yes/No labels. For BTC markets
+        # Yes ≡ Up token, No ≡ Down token (legacy internal "UP"/"DOWN"
+        # direction strings retained for backward compat with the buy path).
+        self.btn_buy_up = ttk.Button(quick_ctrl_frame, text="买 Yes", width=10, command=lambda: self.buy_selected_quick_market("UP"))
         self.btn_buy_up.pack(side="left", padx=4)
-        self.btn_buy_down = ttk.Button(quick_ctrl_frame, text="买 Down", width=10, command=lambda: self.buy_selected_quick_market("DOWN"))
+        self.btn_buy_down = ttk.Button(quick_ctrl_frame, text="买 No", width=10, command=lambda: self.buy_selected_quick_market("DOWN"))
         self.btn_buy_down.pack(side="left", padx=4)
 
         self.lbl_quick_signal = ttk.Label(quick_frame, text="只做辅助判断；每次真实下单前都会确认。", foreground="#475569")
@@ -267,20 +278,20 @@ class PolyQuickTrader:
 
         self.quick_tree = ttk.Treeview(
             quick_frame,
-            columns=("period", "end", "up", "down", "spread", "volume", "question"),
+            columns=("subject", "end", "yes", "no", "spread", "volume", "question"),
             show="headings",
             height=8,
         )
         quick_headings = {
-            "period": "周期",
+            "subject": "类型",
             "end": "结束时间",
-            "up": "Up买/卖",
-            "down": "Down买/卖",
+            "yes": "Yes买/卖",
+            "no": "No买/卖",
             "spread": "价差",
             "volume": "24h量",
             "question": "市场",
         }
-        quick_widths = {"period": 60, "end": 135, "up": 85, "down": 85, "spread": 60, "volume": 80, "question": 500}
+        quick_widths = {"subject": 70, "end": 135, "yes": 85, "no": 85, "spread": 60, "volume": 80, "question": 490}
         for col, title in quick_headings.items():
             self.quick_tree.heading(col, text=title)
             self.quick_tree.column(col, width=quick_widths[col], anchor="center" if col != "question" else "w")
@@ -384,6 +395,7 @@ class PolyQuickTrader:
             "signature_type": self.cbo_signature_type.get(),
             "quick_usdc": self.ent_quick_usdc.get().strip(),
             "quick_max_price": self.ent_quick_max_price.get().strip(),
+            "category": self.cbo_category.get(),
         }
 
     def save_config_to_local(self):
@@ -425,6 +437,9 @@ class PolyQuickTrader:
                 self.cbo_signature_type.set(str(config.get("signature_type")).strip())
             self._set_entry(self.ent_quick_usdc, config.get("quick_usdc", "5"))
             self._set_entry(self.ent_quick_max_price, config.get("quick_max_price", "0.60"))
+            saved_category = config.get("category")
+            if saved_category and saved_category in CATEGORIES:
+                self.cbo_category.set(saved_category)
         except Exception as e:
             self.logger.error("加载配置文件失败: %s", e)
 
@@ -493,19 +508,32 @@ class PolyQuickTrader:
             return None
 
     def scan_quick_button_clicked(self):
+        # Read the selected category and resolve which fetcher to call.
+        # Falls back to the first registry entry (BTC) if the dropdown
+        # is empty for any reason.
+        label = self.cbo_category.get() or next(iter(CATEGORIES))
+        if label not in CATEGORIES:
+            self.logger.error("未知类目: %s", label)
+            return
+        category_code, method_name, kwargs = CATEGORIES[label]
+        fetcher = getattr(self, method_name, None)
+        if not callable(fetcher):
+            self.logger.error("找不到 fetcher 方法: %s", method_name)
+            return
+
         self.btn_scan_quick.configure(state="disabled")
-        self.logger.info("开始扫描 BTC 短周期 Up/Down 市场。")
+        self.logger.info("开始扫描类目: %s", label)
 
         def worker():
             loop = asyncio.new_event_loop()
             try:
-                markets = loop.run_until_complete(self.fetch_quick_btc_markets())
+                markets = loop.run_until_complete(fetcher(**kwargs))
                 self.latest_quick_markets = markets
                 self.root.after(0, lambda: self.render_quick_markets(markets))
-                self.root.after(0, lambda: self.logger.info("短周期市场扫描完成: %s 个候选。", len(markets)))
+                self.root.after(0, lambda lbl=label, n=len(markets): self.logger.info("%s 扫描完成: %s 个候选。", lbl, n))
             except Exception as e:
                 error_text = str(e) or repr(e)
-                self.root.after(0, lambda err=error_text: self.logger.error("短周期市场扫描失败: %s", err))
+                self.root.after(0, lambda err=error_text: self.logger.error("市场扫描失败: %s", err))
             finally:
                 loop.close()
                 self.root.after(0, lambda: self.btn_scan_quick.configure(state="normal"))
@@ -731,8 +759,12 @@ class PolyQuickTrader:
                 end_text = market.end_dt.astimezone().strftime("%m-%d %H:%M")
             if market.ended:
                 end_text += " 已结束"
+            # `subject` falls back to `period` for BTC rows (which sets
+            # period during _build_market) so legacy rows still show
+            # "5m"/"15m"/etc in the first column.
+            label = market.subject or market.period or market.category
             values = (
-                market.period,
+                label,
                 end_text,
                 f"{market.yes_bid:.2f}/{market.yes_ask:.2f}",
                 f"{market.no_bid:.2f}/{market.no_ask:.2f}",
