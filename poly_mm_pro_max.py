@@ -59,6 +59,18 @@ PROB_SHRINK_TOWARD_HALF = 0.6     # final = 0.5 + (sigmoid - 0.5) * this.
 # hand. See buy_quick_market / sell_position_limit.
 ORDER_SUBMIT_TIMEOUT_SECONDS = 25
 
+# --- MiniMax token budgets -------------------------------------------------
+# MiniMax-M2.7 is a thinking model: it emits a <think>...</think> chain-of-
+# thought block before the actual JSON. The system prompt asks it not to,
+# but the model still thinks — it just hides the block from `content` while
+# still consuming tokens. If max_completion_tokens is too small the whole
+# budget goes to thinking and the JSON gets cut off mid-stream (finish_reason
+# = "length"), triggering the repair path. We give the primary call enough
+# headroom to fit thinking + JSON in one shot most of the time, and the
+# repair call enough to also include thinking + a compact final JSON.
+MINIMAX_PRIMARY_TOKEN_BUDGET = 2000
+MINIMAX_REPAIR_TOKEN_BUDGET = 800
+
 
 @dataclass
 class QuickMarket:
@@ -433,10 +445,16 @@ class PolyQuickTrader:
             kwargs["funder"] = config["funder"]
         return ClobClient(**kwargs)
 
-    async def fetch_json(self, url: str, params=None):
+    async def fetch_json(self, url: str, params=None, quiet_404: bool = False):
+        # quiet_404=True is used by speculative slug probes (the generated
+        # btc-updown-<period>-<ts> fallback) where 404 is an expected miss,
+        # not an error. HTML-scraped slugs keep the WARNING because a 404
+        # there means the link on polymarket.com is stale and worth seeing.
         try:
             async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=12), headers={"User-Agent": "Mozilla/5.0"}) as session:
                 async with session.get(url, params=params) as response:
+                    if response.status == 404 and quiet_404:
+                        return None
                     if response.status != 200:
                         self.logger.warning("GET %s 返回 HTTP %s", url, response.status)
                         return None
@@ -488,14 +506,20 @@ class PolyQuickTrader:
             if slug.startswith("btc-updown-") or slug.startswith("bitcoin-up-or-down-"):
                 slugs.append(slug)
 
-        for slug in self.generated_btc_updown_slugs():
+        # Generated slugs are speculative probes of period-aligned timestamps;
+        # most will 404. Track them so fetch_json doesn't WARN-log each miss.
+        generated_slugs = set(self.generated_btc_updown_slugs())
+        for slug in generated_slugs:
             if slug not in slugs:
                 slugs.insert(0, slug)
 
         markets = []
         now = datetime.now(timezone.utc)
         for slug in slugs[:80]:
-            event = await self.fetch_json(f"{GAMMA_EVENT_SLUG_URL}/{slug}")
+            event = await self.fetch_json(
+                f"{GAMMA_EVENT_SLUG_URL}/{slug}",
+                quiet_404=slug in generated_slugs,
+            )
             if not isinstance(event, dict):
                 continue
             for market in event.get("markets") or []:
@@ -738,7 +762,7 @@ class PolyQuickTrader:
             "model": MINIMAX_MODEL,
             "temperature": 0.2,
             "top_p": 0.9,
-            "max_completion_tokens": 900,
+            "max_completion_tokens": MINIMAX_PRIMARY_TOKEN_BUDGET,
             "response_format": {"type": "json_object"},
             "messages": [
                 {
@@ -816,7 +840,7 @@ class PolyQuickTrader:
         payload = {
             "model": MINIMAX_MODEL,
             "temperature": 0,
-            "max_completion_tokens": 300,
+            "max_completion_tokens": MINIMAX_REPAIR_TOKEN_BUDGET,
             "response_format": {"type": "json_object"},
             "messages": [
                 {
