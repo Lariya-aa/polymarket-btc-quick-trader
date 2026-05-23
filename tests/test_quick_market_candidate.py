@@ -171,6 +171,46 @@ def test_accepts_case_insensitive_yes_no(bag):
     assert out is not None
 
 
+def test_accepts_btc_up_down_outcomes(bag):
+    """BTC short-cycle markets come from Gamma with
+    outcomes=["Up","Down"], not ["Yes","No"]. This is the original
+    primary use case of the scanner — must not be filtered out by
+    the yes/no binary gate."""
+    out = bag.quick_market_candidate(
+        _event(),
+        _market(question="Will Bitcoin go up or down in 5m?",
+                outcomes='["Up", "Down"]'),
+        _NOW,
+    )
+    assert out is not None
+    # Token[0] → yes_id (which is the "Up" side semantically); Token[1]
+    # → no_id (Down). The button label "买 Yes" buys Up.
+    assert out.yes_id == "yes-token-id"
+    assert out.no_id == "no-token-id"
+
+
+def test_accepts_case_insensitive_up_down(bag):
+    out = bag.quick_market_candidate(
+        _event(),
+        _market(question="Will Bitcoin go up or down?",
+                outcomes='["UP", "down"]'),
+        _NOW,
+    )
+    assert out is not None
+
+
+def test_rejects_reversed_up_down(bag):
+    # Order matters: ["Down","Up"] would invert which token is the
+    # "up" side under the positional convention.
+    out = bag.quick_market_candidate(
+        _event(),
+        _market(question="Will Bitcoin go up or down?",
+                outcomes='["Down", "Up"]'),
+        _NOW,
+    )
+    assert out is None
+
+
 def test_rejects_missing_outcomes_field(bag):
     out = bag.quick_market_candidate(
         _event(),

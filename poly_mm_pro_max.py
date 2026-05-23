@@ -1788,18 +1788,33 @@ class PolyQuickTrader:
             return []
         return [str(x) for x in parsed if x not in (None, "")]
 
-    def _is_yes_no_market(self, market: dict) -> bool:
-        """Verify a Gamma market's `outcomes` are exactly ["Yes", "No"]
-        (case-insensitive, order-sensitive).
+    # Outcome label pairs the scanner accepts as semantically-binary. The
+    # first element maps to yes_id (token[0]), the second to no_id
+    # (token[1]). Anything else (team-vs-team, three-way, etc.) is
+    # rejected so "买 Yes" / "买 No" doesn't silently route to a
+    # mislabeled token. Case-insensitive comparison.
+    _ACCEPTED_BINARY_OUTCOMES = (
+        ("yes", "no"),    # generic Polymarket binary
+        ("up", "down"),   # BTC short-cycle "Will price go up?" — primary use case
+    )
 
-        Gamma stores outcomes as a JSON string like '["Yes", "No"]' or
-        '["Knicks", "Cavaliers"]'. We refuse to map team-name markets
-        through the yes_id/no_id positional convention because the UI
-        labels the buy buttons "买 Yes" / "买 No" — a Knicks-vs-Cavs
-        market would silently route a Yes-buyer into the Knicks token,
-        which is dishonest. BTC up/down markets do come through with
-        outcomes=["Yes","No"] (Yes = price will go up), so this filter
-        leaves the existing primary use case intact.
+    def _is_yes_no_market(self, market: dict) -> bool:
+        """Verify a Gamma market's `outcomes` form a known binary pair.
+
+        Returns True for {"Yes","No"} and {"Up","Down"} (case-insensitive,
+        order-sensitive). False for everything else — including 3-way
+        markets, team-vs-team like ["Knicks","Cavaliers"], and reversed
+        pairs like ["No","Yes"] (because reversed order would silently
+        flip the meaning of yes_id / no_id under the positional
+        assignment used by _build_market).
+
+        Why Up/Down is in the accepted set: BTC short-cycle is the
+        original primary use case of this scanner. Those markets come
+        from Gamma with outcomes=["Up","Down"], not ["Yes","No"]. The
+        UI labels "买 Yes" / "买 No" stay consistent — for a BTC market
+        "Yes" means "Up" semantically (will Bitcoin go up: Yes/No), and
+        the table's `subject` column shows the period ("5m"/"15m"/...)
+        which gives the user enough context.
         """
         raw = market.get("outcomes")
         if isinstance(raw, str):
@@ -1818,7 +1833,7 @@ class PolyQuickTrader:
             b = str(outcomes[1]).strip().lower()
         except (TypeError, ValueError):
             return False
-        return a == "yes" and b == "no"
+        return (a, b) in self._ACCEPTED_BINARY_OUTCOMES
 
     def _parse_datetime(self, raw):
         if not raw:
