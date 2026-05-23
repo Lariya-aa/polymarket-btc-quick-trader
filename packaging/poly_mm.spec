@@ -18,11 +18,15 @@
 #   Trying to keep two build variants doubles QA surface and the .dmg /
 #   .exe artifacts only need one layout each.
 
+import os
 import sys
 
 block_cipher = None
 APP_NAME = "PolyMarketTrader"
-SCRIPT = "poly_mm_pro_max.py"
+# Spec file lives in packaging/; resolve paths relative to the repo root
+# so the spec works no matter what CWD pyinstaller is invoked from.
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(SPEC), ".."))
+SCRIPT = os.path.join(REPO_ROOT, "poly_mm_pro_max.py")
 
 # py_clob_client_v2 has eth-account and web3 transitive deps whose
 # submodule layout sometimes hides from PyInstaller's static analysis.
@@ -42,7 +46,7 @@ hidden = [
 
 a = Analysis(
     [SCRIPT],
-    pathex=["."],
+    pathex=[REPO_ROOT],
     binaries=[],
     datas=[],
     hiddenimports=hidden,

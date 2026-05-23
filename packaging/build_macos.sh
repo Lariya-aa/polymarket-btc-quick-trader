@@ -98,9 +98,9 @@ hdiutil create \
 echo ""
 echo "✅ Built:"
 echo "    $APP_PATH"
-ls -lh "$APP_PATH" | awk '{print "      ("$5")"}'
+echo "      ($(du -sh "$APP_PATH" | cut -f1))"
 echo "    $DMG_PATH"
-ls -lh "$DMG_PATH" | awk '{print "      ("$5")"}'
+echo "      ($(du -sh "$DMG_PATH" | cut -f1))"
 echo ""
 echo "Smoke test the .app before distributing:"
 echo "    open $APP_PATH"
