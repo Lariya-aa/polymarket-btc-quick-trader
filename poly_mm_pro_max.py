@@ -670,9 +670,9 @@ class PolyQuickTrader:
         # Fallback: when scraping polymarket.com/crypto/bitcoin yields no
         # event links (HTML structure changed, regional block, etc.) we
         # generate slugs by aligning the current unix time to each period
-        # boundary and probing ±2 boundaries around now. This used to only
-        # cover 5m/15m/4h; 1h and 1d are now included so all five horizons
-        # the UI offers have a backup discovery path. Virtue 3.
+        # boundary and probing ±2 boundaries around now. Covers all five
+        # horizons the UI offers (5m/15m/1h/4h/1d) so the scanner stays
+        # usable even when the HTML scrape returns zero candidates.
         now_ts = int(time.time())
         slugs = []
         for period, seconds in (("5m", 300), ("15m", 900), ("1h", 3600), ("4h", 14400), ("1d", 86400)):

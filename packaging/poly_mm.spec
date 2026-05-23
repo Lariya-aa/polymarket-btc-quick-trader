@@ -104,7 +104,8 @@ if sys.platform == "darwin":
     app = BUNDLE(
         coll,
         name=f"{APP_NAME}.app",
-        icon=None,  # TODO: add packaging/icon.icns
+        icon=None,  # No app icon for v0.1. To add one, drop an .icns
+                    # at packaging/icon.icns and reference it here.
         bundle_identifier="com.polymarket.quicktrader",
         info_plist={
             "CFBundleName": APP_NAME,
