@@ -1802,10 +1802,19 @@ class PolyQuickTrader:
             return None
 
     def _float_or_zero(self, value):
+        # Returns a *finite* float. NaN / +inf / -inf parse cleanly out
+        # of float() but propagate poison through every comparison
+        # (NaN > x == False; NaN math == NaN), so we collapse them to
+        # 0.0 alongside the TypeError/ValueError cases. This is the
+        # single chokepoint between external API payloads and the
+        # display / PnL / size-routing code paths.
         try:
-            return float(value)
+            v = float(value)
         except (TypeError, ValueError):
             return 0.0
+        if not math.isfinite(v):
+            return 0.0
+        return v
 
     def _optional_float(self, value):
         try:

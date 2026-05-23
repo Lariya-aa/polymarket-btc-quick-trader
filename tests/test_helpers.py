@@ -22,6 +22,18 @@ def test_float_or_zero_handles_int(bag):
     assert bag._float_or_zero(7) == 7.0
 
 
+def test_float_or_zero_rejects_nan(bag):
+    # NaN / inf parse cleanly out of float() but poison downstream
+    # math and comparisons (every NaN > x returns False, every NaN math
+    # returns NaN). _float_or_zero is the chokepoint between Polymarket
+    # API payloads and our display/PnL/size code — collapse them to 0.
+    assert bag._float_or_zero("nan") == 0.0
+    assert bag._float_or_zero("inf") == 0.0
+    assert bag._float_or_zero("-inf") == 0.0
+    assert bag._float_or_zero(float("nan")) == 0.0
+    assert bag._float_or_zero(float("inf")) == 0.0
+
+
 def test_optional_float_returns_none_on_garbage(bag):
     assert bag._optional_float("not a number") is None
     assert bag._optional_float(None) is None
