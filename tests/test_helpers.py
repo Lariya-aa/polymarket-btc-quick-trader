@@ -43,6 +43,18 @@ def test_optional_float_parses_valid(bag):
     assert bag._optional_float("0.42") == 0.42
 
 
+def test_optional_float_rejects_nan_inf(bag):
+    # Found by Codex pass-4: _optional_float feeds _build_market's
+    # bestBid / bestAsk parsing. NaN survives float() and the
+    # downstream <0 / >1 / bid>=ask checks all evaluate False for NaN,
+    # so a NaN-priced market would silently land in the candidate list.
+    assert bag._optional_float("nan") is None
+    assert bag._optional_float("inf") is None
+    assert bag._optional_float("-inf") is None
+    assert bag._optional_float(float("nan")) is None
+    assert bag._optional_float(float("inf")) is None
+
+
 def test_parse_token_ids_list_passthrough(bag):
     assert bag._parse_token_ids(["a", "b"]) == ["a", "b"]
 
@@ -56,6 +68,22 @@ def test_parse_token_ids_returns_empty_on_garbage(bag):
     assert bag._parse_token_ids("not json") == []
     assert bag._parse_token_ids(None) == []
     assert bag._parse_token_ids("") == []
+
+
+def test_parse_token_ids_rejects_scalar_string_payload(bag):
+    # Bug found by Codex pass-4: a JSON-encoded scalar string like
+    # '"abcdef"' previously char-iterated into ['a','b','c',...],
+    # then _build_market would happily assign yes_id='a', no_id='b'
+    # into the order path. _parse_token_ids must require a list.
+    assert bag._parse_token_ids('"abcdef"') == []
+
+
+def test_parse_token_ids_rejects_dict_payload(bag):
+    assert bag._parse_token_ids('{"yes": "y", "no": "n"}') == []
+
+
+def test_parse_token_ids_drops_empty_entries(bag):
+    assert bag._parse_token_ids('["yes-id", "", null]') == ["yes-id"]
 
 
 def test_parse_token_ids_coerces_to_strings(bag):

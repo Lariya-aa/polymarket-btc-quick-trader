@@ -1751,15 +1751,26 @@ class PolyQuickTrader:
         return round(min(max(price, tick), 1.0 - tick), decimals)
 
     def _parse_token_ids(self, raw):
-        if isinstance(raw, list):
-            return [str(x) for x in raw]
+        # Gamma stores clobTokenIds as a JSON-encoded list string,
+        # e.g. '["yes-id","no-id"]'. We previously did
+        # `parsed = json.loads(raw); return [str(x) for x in parsed]`
+        # which silently char-iterates if `parsed` is itself a string —
+        # so a malformed market payload like '"abcdef"' (JSON-encoded
+        # scalar) would yield ['a','b','c',...] and then _build_market
+        # would happily route a yes_id of "a" and no_id of "b" into the
+        # order path. Tightened to require a list/tuple of at least two
+        # non-empty string entries.
+        if isinstance(raw, (list, tuple)):
+            return [str(x) for x in raw if x not in (None, "")]
         if not raw:
             return []
         try:
             parsed = json.loads(raw)
-            return [str(x) for x in parsed]
-        except Exception:
+        except (ValueError, TypeError):
             return []
+        if not isinstance(parsed, (list, tuple)):
+            return []
+        return [str(x) for x in parsed if x not in (None, "")]
 
     def _is_yes_no_market(self, market: dict) -> bool:
         """Verify a Gamma market's `outcomes` are exactly ["Yes", "No"]
@@ -1817,10 +1828,20 @@ class PolyQuickTrader:
         return v
 
     def _optional_float(self, value):
+        # Returns a finite float or None. The non-finite collapse
+        # mirrors _float_or_zero — bestBid / bestAsk from Gamma have
+        # been observed as 'nan' string in practice, and downstream
+        # the _build_market guards (best_bid <= 0, best_ask >= 1,
+        # best_bid >= best_ask) all evaluate False for NaN, letting
+        # nan-priced markets through to the buy buttons. Treat
+        # non-finite the same as an unparseable value here.
         try:
-            return float(value)
+            v = float(value)
         except (TypeError, ValueError):
             return None
+        if not math.isfinite(v):
+            return None
+        return v
 
     def _book_level_value(self, level, key: str):
         if isinstance(level, dict):
