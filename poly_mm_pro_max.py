@@ -1302,6 +1302,15 @@ class PolyQuickTrader:
             "提交买入订单: %s price=%.4f size=%.4f tick=%s local_attempt_id=%s",
             direction, price, size, tick_size or market.tick_size, local_attempt_id,
         )
+        # NOTE: asyncio.wait_for cancels the *await*, but it cannot kill
+        # the underlying OS thread spawned by asyncio.to_thread. If the
+        # CLOB call is blocked inside py_clob_client_v2's HTTP layer,
+        # that thread keeps running until that call returns (or the
+        # process exits). Its eventual result is discarded. Practically
+        # this means: on TimeoutError the order may still land on the
+        # exchange seconds after we raised. That's exactly why the user
+        # message instructs them to reconcile via polymarket.com/portfolio
+        # before retrying — there's no clean cancellation primitive here.
         try:
             resp = await asyncio.wait_for(
                 asyncio.to_thread(
