@@ -3,3 +3,6 @@
 # `pytest tests/` on a fresh machine.
 -r requirements.txt
 pytest>=8.0,<9.0
+
+# Packaging — only needed when running packaging/build_*.sh|.ps1.
+pyinstaller>=6.0,<7.0

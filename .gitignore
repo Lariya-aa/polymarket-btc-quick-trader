@@ -20,3 +20,12 @@ PolyMarketMaker.app/
 .venv/
 venv/
 env/
+
+# PyInstaller / build artifacts
+build/
+dist/
+*.dmg
+*.exe
+*.spec.bak
+PolyMarketTrader.app/
+PolyMarketTrader/
