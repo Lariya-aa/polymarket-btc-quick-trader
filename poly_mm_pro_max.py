@@ -1205,6 +1205,18 @@ class PolyQuickTrader:
                     (llm.get("usage") or {}).get("total_tokens", "--"),
                 )
 
+    def _display_direction(self, direction: str) -> str:
+        """Map the internal direction string ("UP" / "DOWN") to the
+        user-facing label ("Yes" / "No"). Yes corresponds to the Up
+        token, No to the Down token. The internal string is kept for
+        order-routing back-compat; this helper is for any text the user
+        sees (confirmation dialog, push notification, etc.)."""
+        if direction == "UP":
+            return "Yes"
+        if direction == "DOWN":
+            return "No"
+        return direction
+
     def buy_selected_quick_market(self, direction: str):
         market = self.selected_quick_market()
         if not market:
@@ -1226,7 +1238,7 @@ class PolyQuickTrader:
             return
         if not messagebox.askyesno(
             "确认快速买入",
-            f"市场: {market.question}\n方向: {direction}\n金额: {usdc_amount:.2f} USDC\n最高可接受价格: {max_price:.4f}\n\n这是真实交易操作，可能立即成交。确认继续？",
+            f"市场: {market.question}\n方向: {self._display_direction(direction)}\n金额: {usdc_amount:.2f} USDC\n最高可接受价格: {max_price:.4f}\n\n这是真实交易操作，可能立即成交。确认继续？",
         ):
             return
 
@@ -1502,7 +1514,7 @@ class PolyQuickTrader:
             "### Polymarket 交易提交结果\n\n"
             f"- 操作: `{action}`\n"
             f"- 市场: {market_title}\n"
-            f"- 方向: `{direction}`\n"
+            f"- 方向: `{self._display_direction(direction)}`\n"
             f"- 数量: `{size:.4f}`\n"
             f"- 价格: `{price:.4f}`\n"
             f"- 状态: `{status}`\n"
