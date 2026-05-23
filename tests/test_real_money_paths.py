@@ -252,6 +252,31 @@ def test_sell_timeout_raises_with_local_attempt_id(trader, monkeypatch):
     assert "卖出" in msg
 
 
+def test_sell_rejected_raises_with_local_attempt_id(trader, monkeypatch):
+    """Symmetric to test_buy_rejected_raises_with_local_attempt_id —
+    a sell that the exchange rejects with success:False must surface
+    the local_attempt_id so the user can correlate."""
+    position = {
+        "asset": "yes-token", "outcome": "Yes",
+        "orderPriceMinTickSize": "0.01",
+        "title": "test", "slug": "test", "eventSlug": "test",
+    }
+    monkeypatch.setattr(trader, "validate_credentials_config", lambda: {
+        "priv_key": "0xkey", "api_key": "k", "secret": "s",
+        "passphrase": "p", "funder": "0xfunder", "signature_type": 3,
+    })
+    fake_client = MagicMock()
+    fake_client.create_and_post_order = MagicMock(return_value={
+        "success": False, "errorMsg": "size too small",
+    })
+    monkeypatch.setattr(trader, "build_client", lambda c, cr: fake_client)
+    with pytest.raises(RuntimeError) as exc:
+        asyncio.run(trader.sell_position_limit(position, size=10.0, price=0.5))
+    msg = str(exc.value)
+    assert "local_attempt_id=" in msg
+    assert "拒绝" in msg
+
+
 # ── fetch_positions: response-shape branches ──────────────────────────────
 
 

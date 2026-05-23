@@ -98,3 +98,25 @@ def test_garbage_prob_string_falls_back_to_half(bag):
     # to the 0.5 default rather than crashing.
     out = bag.parse_minimax_json('{"prob_up": "hello", "action": "BUY_UP"}')
     assert out["prob_up"] == 0.5
+
+
+def test_nan_prob_down_falls_back_to_complement(bag):
+    """Symmetric to the prob_up branch: a NaN/inf prob_down should
+    fall back to (1 - prob_up) instead of propagating NaN. K3 fixed
+    asymmetric test coverage."""
+    import math
+    out = bag.parse_minimax_json('{"prob_up": 0.6, "prob_down": "nan", "action": "BUY_UP"}')
+    assert math.isfinite(out["prob_down"])
+    assert out["prob_down"] == pytest.approx(0.4)
+
+
+def test_inf_prob_down_falls_back_to_complement(bag):
+    import math
+    out = bag.parse_minimax_json('{"prob_up": 0.3, "prob_down": "inf", "action": "BUY_DOWN"}')
+    assert math.isfinite(out["prob_down"])
+    assert out["prob_down"] == pytest.approx(0.7)
+
+
+def test_garbage_prob_down_falls_back_to_complement(bag):
+    out = bag.parse_minimax_json('{"prob_up": 0.4, "prob_down": "wat", "action": "BUY_DOWN"}')
+    assert out["prob_down"] == pytest.approx(0.6)
