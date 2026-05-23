@@ -133,6 +133,96 @@ def test_buy_rejects_when_ask_above_max_price(trader, monkeypatch):
     assert submission_calls == [], "should not submit when ask > max_price"
 
 
+# ── BLOCKER C1 (Codex pass-2): NaN / inf in order pipeline ────────────────
+
+
+def test_buy_rejects_nan_ask_price(trader, monkeypatch):
+    """If best_ask comes back as NaN (rare but possible — strings like
+    'nan' survive float() coercion), every downstream guard fails
+    silently because NaN comparisons are False. Must be rejected
+    explicitly before reaching OrderArgs."""
+    import math
+    market = _btc_market()
+    monkeypatch.setattr(trader, "validate_credentials_config", lambda: {
+        "priv_key": "0xkey", "api_key": "k", "secret": "s",
+        "passphrase": "p", "funder": "0xfunder", "signature_type": 3,
+    })
+    fake_client = MagicMock()
+    fake_client.create_and_post_order = MagicMock(return_value={"success": True})
+    monkeypatch.setattr(trader, "build_client", lambda c, cr: fake_client)
+    async def nan_ask(self, client, token_id):
+        return float("nan"), "0.01"
+    monkeypatch.setattr(M.PolyQuickTrader, "best_ask_for_token", nan_ask)
+
+    with pytest.raises(RuntimeError) as exc:
+        asyncio.run(trader.buy_quick_market(market, "UP", 5.0, 0.99))
+    assert "非有限" in str(exc.value) or "nan" in str(exc.value).lower()
+
+
+def test_clamp_price_rejects_nan(bag):
+    """clamp_price used min/max + round which all propagate NaN
+    silently — round(NaN, 2) returns NaN. Must raise on NaN/inf."""
+    with pytest.raises(ValueError):
+        bag.clamp_price(float("nan"), "0.01")
+    with pytest.raises(ValueError):
+        bag.clamp_price(float("inf"), "0.01")
+    with pytest.raises(ValueError):
+        bag.clamp_price(0.5, "nan")
+    with pytest.raises(ValueError):
+        bag.clamp_price(0.5, "0")  # non-positive tick
+
+
+def test_best_ask_drops_nan_levels(trader, monkeypatch):
+    """best_ask_for_token used to coerce any 'price' field through
+    float() unconditionally — so a level like {'price': 'nan'} would
+    survive and dominate min(asks). Verify the filter keeps it out."""
+    import math
+    book = {
+        "asks": [
+            {"price": "nan", "size": "10"},
+            {"price": "0.55", "size": "5"},
+            {"price": "0.60", "size": "20"},
+        ],
+        "tick_size": "0.01",
+    }
+    fake_client = MagicMock()
+    fake_client.get_order_book = MagicMock(return_value=book)
+    best_ask, tick = asyncio.run(trader.best_ask_for_token(fake_client, "token-x"))
+    assert best_ask == 0.55, "NaN level should be dropped, 0.55 wins"
+    assert tick == "0.01"
+
+
+def test_best_ask_returns_none_when_all_levels_nonfinite(trader):
+    """If every ask level is non-finite the function should report
+    'no asks' (None) rather than NaN."""
+    book = {"asks": [{"price": "nan"}, {"price": "inf"}], "tick_size": "0.01"}
+    fake_client = MagicMock()
+    fake_client.get_order_book = MagicMock(return_value=book)
+    best_ask, tick = asyncio.run(trader.best_ask_for_token(fake_client, "token-x"))
+    assert best_ask is None
+
+
+def test_sell_rejects_nan_inputs(trader, monkeypatch):
+    """sell_position_limit takes size + price from caller (computed
+    from a position dict). If the position has NaN size or price, the
+    guard must reject before reaching OrderArgs."""
+    position = {"asset": "yes-token", "outcome": "Yes",
+                "orderPriceMinTickSize": "0.01"}
+    monkeypatch.setattr(trader, "validate_credentials_config", lambda: {
+        "priv_key": "0xkey", "api_key": "k", "secret": "s",
+        "passphrase": "p", "funder": "0xfunder", "signature_type": 3,
+    })
+    fake_client = MagicMock()
+    monkeypatch.setattr(trader, "build_client", lambda c, cr: fake_client)
+    import math
+    with pytest.raises(RuntimeError) as exc:
+        asyncio.run(trader.sell_position_limit(position, size=float("nan"), price=0.5))
+    assert "非法" in str(exc.value)
+    with pytest.raises(RuntimeError) as exc:
+        asyncio.run(trader.sell_position_limit(position, size=10.0, price=float("inf")))
+    assert "非法" in str(exc.value)
+
+
 # ── sell_position_limit: timeout branch ───────────────────────────────────
 
 

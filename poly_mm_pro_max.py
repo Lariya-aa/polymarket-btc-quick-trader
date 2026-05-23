@@ -1272,10 +1272,17 @@ class PolyQuickTrader:
         ask_price, tick_size = await self.best_ask_for_token(client, token_id)
         if ask_price is None:
             raise RuntimeError("订单簿没有可买卖价")
+        # best_ask_for_token already drops non-finite values, but guard
+        # again here so any future change to that function can't bypass
+        # the size = usdc_amount/price → NaN/inf hazard.
+        if not math.isfinite(ask_price):
+            raise RuntimeError(f"盘口卖价非有限数值 (ask={ask_price}), 已拒绝下单")
         if ask_price > max_price:
             raise RuntimeError(f"盘口卖价 {ask_price:.4f} 高于最高价 {max_price:.4f}，已拒绝下单")
         price = self.clamp_price(ask_price, tick_size or market.tick_size)
         size = usdc_amount / price
+        if not (math.isfinite(price) and math.isfinite(size) and price > 0):
+            raise RuntimeError(f"订单参数非有限数值 (price={price}, size={size}), 已拒绝下单")
         if size < 5.0:
             raise RuntimeError(f"买入金额太小，按价格 {price:.4f} 至少需要 {price * 5:.2f} USDC 才满足 5 份最小下单量")
         local_attempt_id = str(uuid.uuid4())
@@ -1309,7 +1316,22 @@ class PolyQuickTrader:
         orderbook = await asyncio.wait_for(asyncio.to_thread(client.get_order_book, token_id), timeout=15)
         raw_asks = orderbook.get("asks", []) if isinstance(orderbook, dict) else getattr(orderbook, "asks", None) or []
         tick_size = str((orderbook.get("tick_size") if isinstance(orderbook, dict) else getattr(orderbook, "tick_size", None)) or "0.01")
-        asks = [float(self._book_level_value(level, "price")) for level in raw_asks if self._book_level_value(level, "price") is not None]
+        # Drop non-finite ask values at the boundary. float("nan") /
+        # float("inf") survive _book_level_value coercion silently and
+        # would then pass every downstream `> max_price` / `<= 0` /
+        # `< 5.0` guard (all NaN comparisons return False), eventually
+        # landing in OrderArgs(price=NaN). Reject here.
+        asks = []
+        for level in raw_asks:
+            raw = self._book_level_value(level, "price")
+            if raw is None:
+                continue
+            try:
+                v = float(raw)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(v):
+                asks.append(v)
         if not asks:
             return None, tick_size
         best_ask = min(asks)
@@ -1463,6 +1485,12 @@ class PolyQuickTrader:
         client = self.build_client(config, creds)
         token_id = str(position.get("asset"))
         tick_size = str(position.get("orderPriceMinTickSize") or "0.01")
+        # Validate inputs before they reach clamp_price / OrderArgs.
+        # The position dict comes from an external Polymarket API
+        # response — _float_or_zero won't reject NaN/inf parsed from
+        # strings, so guard explicitly.
+        if not (math.isfinite(price) and math.isfinite(size) and price > 0 and size > 0):
+            raise RuntimeError(f"卖单参数非法 (price={price}, size={size}), 已拒绝下单")
         price = self.clamp_price(price, tick_size)
         local_attempt_id = str(uuid.uuid4())
         self.logger.info(
@@ -1605,7 +1633,14 @@ class PolyQuickTrader:
         return len(tick_size.rstrip("0").split(".", 1)[1])
 
     def clamp_price(self, price: float, tick_size: str) -> float:
+        # Reject non-finite inputs explicitly. min/max propagate NaN
+        # silently and round(NaN, n) returns NaN — meaning a NaN price
+        # would survive this function and reach OrderArgs.
+        if not math.isfinite(price):
+            raise ValueError(f"clamp_price refuses non-finite price: {price!r}")
         tick = float(tick_size)
+        if not math.isfinite(tick) or tick <= 0:
+            raise ValueError(f"clamp_price refuses non-finite/non-positive tick: {tick_size!r}")
         decimals = self.price_decimals(tick_size)
         return round(min(max(price, tick), 1.0 - tick), decimals)
 
