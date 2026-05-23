@@ -1,6 +1,6 @@
 """Tests for the real-money order paths (buy/sell) and fetch_positions
-shape-handling. These were the four BLOCKER findings from the Codex
-review pass-1.
+shape-handling. Real money flows through these methods, so every branch
+needs a positive + negative test case.
 
 We stub py_clob_client_v2 + the order-submission path with MagicMock /
 custom sync stubs so no real HTTP / no wallet touch / no $$$ moves.
@@ -133,7 +133,7 @@ def test_buy_rejects_when_ask_above_max_price(trader, monkeypatch):
     assert submission_calls == [], "should not submit when ask > max_price"
 
 
-# ── BLOCKER C1 (Codex pass-2): NaN / inf in order pipeline ────────────────
+# ── NaN / inf in order pipeline ─────────────────────────────────────────
 
 
 def test_buy_rejects_nan_ask_price(trader, monkeypatch):
@@ -322,8 +322,10 @@ def test_fetch_positions_non_200_sets_error(trader, monkeypatch):
 
 def test_fetch_positions_non_list_sets_error(trader, monkeypatch):
     """200 OK but body is a dict (e.g. {"error": "..."} or some other
-    schema drift): MUST set last_positions_fetch_error. This is the
-    BLOCKER #2 bug that was fixed in commit ca16ecd."""
+    schema drift): MUST set last_positions_fetch_error. The earlier
+    fetch_positions had an ordering bug that cleared the error flag
+    before checking the response shape — this guards against that
+    regression."""
     fake_entry = MagicMock()
     fake_entry.get.return_value = "0xfunder"
     trader.ent_funder = fake_entry
@@ -395,7 +397,7 @@ def test_fetch_positions_exception_sets_error(trader, monkeypatch):
     assert "OSError" in trader.last_positions_fetch_error
 
 
-# ── _display_direction (UI mapping helper added in commit 160eacb) ────────
+# ── _display_direction (UP/DOWN → Yes/No UI mapping helper) ───────────────
 
 
 def test_display_direction_maps_up_to_yes(bag):
@@ -410,7 +412,7 @@ def test_display_direction_passthrough_unknown(bag):
     assert bag._display_direction("FOO") == "FOO"
 
 
-# ── BLOCKER C-P3-2 (Codex pass-3): push_trade_result must honor
+# ── push_trade_result must honor last_positions_fetch_error ──────────────
 #                                    last_positions_fetch_error ──────────
 
 

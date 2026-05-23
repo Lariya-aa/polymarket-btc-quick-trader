@@ -122,7 +122,7 @@ def test_period_unknown_returns_question_mark(bag):
     assert bag.quick_period_from_slug_or_title("some-slug", "completely unrelated") == "?"
 
 
-# ── BLOCKER C2 (Codex pass-2): outcomes must be Yes/No ────────────────────
+# ── outcomes must be Yes/No (positional yes_id/no_id assumption) ──────────
 
 
 def test_rejects_team_vs_team_outcomes(bag):

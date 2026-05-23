@@ -1,11 +1,11 @@
 version: 2
 updates:
-  # GitHub Actions tracked here ride on mutable tags (@v4, @v2) in
-  # .github/workflows/build.yml. Dependabot raises a PR when an action
-  # publishes a new minor/patch so we can review the diff before
-  # bumping. For higher rigor (e.g. wide public distribution), pin
-  # action references to commit SHAs and use Dependabot's
-  # commit-message conventions to auto-PR security updates only.
+  # The workflow in .github/workflows/build.yml SHA-pins every action
+  # (e.g. actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4).
+  # Dependabot understands SHA-pinned references — it will raise a PR
+  # bumping the SHA whenever the tag in the trailing comment publishes
+  # a new release. Each bump is then a reviewable diff rather than
+  # silent drift, which is the whole point of SHA pinning.
   - package-ecosystem: github-actions
     directory: /
     schedule:
