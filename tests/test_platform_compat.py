@@ -20,34 +20,47 @@ import poly_mm_pro_max as M
 # ── path helpers ──────────────────────────────────────────────────────────
 
 
-def test_user_data_dir_exists_after_call(tmp_path, monkeypatch):
-    # Redirect each platform's base dir into tmp_path so the test doesn't
-    # touch the real user profile.
+@pytest.fixture
+def isolated_user_data_dir(tmp_path, monkeypatch):
+    """Redirect each platform's user-data base directory into tmp_path
+    so path-helper tests don't mkdir into ~/Library/Application Support/
+    %APPDATA%/$XDG_DATA_HOME during the test run."""
     if sys.platform == "darwin":
-        fake_home = tmp_path / "home"
-        fake_home.mkdir()
-        monkeypatch.setattr(os.path, "expanduser", lambda p: str(fake_home) if p == "~/Library/Application Support" else p)
+        fake_home = tmp_path / "Library" / "Application Support"
+        fake_home.mkdir(parents=True)
+        monkeypatch.setattr(
+            os.path,
+            "expanduser",
+            lambda p: str(fake_home) if p == "~/Library/Application Support" else p,
+        )
     elif sys.platform == "win32":
         monkeypatch.setenv("APPDATA", str(tmp_path))
     else:
         monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    yield tmp_path
 
+
+def test_user_data_dir_exists_after_call(isolated_user_data_dir):
     path = M.user_data_dir()
     assert os.path.isdir(path), f"user_data_dir() should mkdir: {path}"
     assert path.endswith(M.APP_DIR_NAME)
 
 
-def test_config_path_lives_under_user_data_dir():
+def test_config_path_lives_under_user_data_dir(isolated_user_data_dir):
     assert os.path.dirname(M.config_path()) == M.user_data_dir()
     assert os.path.basename(M.config_path()) == M.CONFIG_FILE
 
 
-def test_log_path_lives_under_user_data_dir():
+def test_log_path_lives_under_user_data_dir(isolated_user_data_dir):
     assert os.path.dirname(M.log_path()) == M.user_data_dir()
     assert os.path.basename(M.log_path()) == M.LOG_FILE
 
 
 def test_lock_path_lives_under_tempdir():
+    # lock_path uses tempfile.gettempdir() which is system-managed; no
+    # need to isolate because writing 1 byte to /tmp during a test is
+    # harmless and the real lock fixture (isolated_lock_path) redirects
+    # everything that actually opens the file.
     import tempfile
     assert os.path.dirname(M.lock_path()) == tempfile.gettempdir()
     assert os.path.basename(M.lock_path()) == M.LOCK_FILE
