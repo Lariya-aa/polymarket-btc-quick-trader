@@ -54,9 +54,13 @@ PROB_SHRINK_TOWARD_HALF = 0.6     # final = 0.5 + (sigmoid - 0.5) * this.
 # --- Order safety ----------------------------------------------------------
 # Order submission wraps the CLOB call in asyncio.wait_for. A timeout does
 # NOT prove the order was rejected — the exchange may have accepted it but
-# the response was lost. We therefore generate a client_order_id per attempt
-# and refuse to silently retry on TimeoutError; the user must reconcile by
-# hand. See buy_quick_market / sell_position_limit.
+# the response was lost. We therefore generate a local_attempt_id per
+# attempt (logged client-side only — py_clob_client_v2.OrderArgs has no
+# client-ID field; we verified its signature is
+#   (token_id, price, size, side, expiration=0, builder_code=..., metadata=..., user_usdc_balance=None)
+# so the UUID is purely a local reconciliation anchor) and refuse to
+# silently retry on TimeoutError; the user must reconcile by hand. See
+# buy_quick_market / sell_position_limit.
 ORDER_SUBMIT_TIMEOUT_SECONDS = 25
 
 # --- MiniMax token budgets -------------------------------------------------
@@ -1258,10 +1262,10 @@ class PolyQuickTrader:
         size = usdc_amount / price
         if size < 5.0:
             raise RuntimeError(f"买入金额太小，按价格 {price:.4f} 至少需要 {price * 5:.2f} USDC 才满足 5 份最小下单量")
-        client_order_id = str(uuid.uuid4())
+        local_attempt_id = str(uuid.uuid4())
         self.logger.info(
-            "提交买入订单: %s price=%.4f size=%.4f tick=%s client_order_id=%s",
-            direction, price, size, tick_size or market.tick_size, client_order_id,
+            "提交买入订单: %s price=%.4f size=%.4f tick=%s local_attempt_id=%s",
+            direction, price, size, tick_size or market.tick_size, local_attempt_id,
         )
         try:
             resp = await asyncio.wait_for(
@@ -1276,12 +1280,12 @@ class PolyQuickTrader:
             )
         except asyncio.TimeoutError:
             raise RuntimeError(
-                f"提交买入订单超时（client_order_id={client_order_id}）。"
+                f"提交买入订单超时（local_attempt_id={local_attempt_id}）。"
                 f"订单状态未知，可能已被交易所接收。请打开 https://polymarket.com/portfolio "
                 f"核对后再决定下一步，切勿直接点重试。"
             )
         if isinstance(resp, dict) and resp.get("success") is False:
-            raise RuntimeError(f"交易所拒绝订单 (client_order_id={client_order_id}): {resp}")
+            raise RuntimeError(f"交易所拒绝订单 (local_attempt_id={local_attempt_id}): {resp}")
         await self.push_trade_result("快速买入", market.question, direction, size, price, resp, market_slug=market.slug)
         return resp
 
@@ -1444,10 +1448,10 @@ class PolyQuickTrader:
         token_id = str(position.get("asset"))
         tick_size = str(position.get("orderPriceMinTickSize") or "0.01")
         price = self.clamp_price(price, tick_size)
-        client_order_id = str(uuid.uuid4())
+        local_attempt_id = str(uuid.uuid4())
         self.logger.info(
-            "提交卖出订单: %s price=%.4f size=%.4f tick=%s client_order_id=%s",
-            token_id[:12], price, size, tick_size, client_order_id,
+            "提交卖出订单: %s price=%.4f size=%.4f tick=%s local_attempt_id=%s",
+            token_id[:12], price, size, tick_size, local_attempt_id,
         )
         try:
             resp = await asyncio.wait_for(
@@ -1462,12 +1466,12 @@ class PolyQuickTrader:
             )
         except asyncio.TimeoutError:
             raise RuntimeError(
-                f"提交卖出订单超时（client_order_id={client_order_id}）。"
+                f"提交卖出订单超时（local_attempt_id={local_attempt_id}）。"
                 f"订单状态未知，可能已被交易所接收。请打开 https://polymarket.com/portfolio "
                 f"核对后再决定下一步，切勿直接点重试。"
             )
         if isinstance(resp, dict) and resp.get("success") is False:
-            raise RuntimeError(f"交易所拒绝订单 (client_order_id={client_order_id}): {resp}")
+            raise RuntimeError(f"交易所拒绝订单 (local_attempt_id={local_attempt_id}): {resp}")
         await self.push_trade_result(
             "限价卖出",
             position.get("title", ""),
