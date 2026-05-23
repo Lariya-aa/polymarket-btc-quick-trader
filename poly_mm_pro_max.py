@@ -1301,7 +1301,7 @@ class PolyQuickTrader:
         # human-readable string on any failure. Callers can read this to
         # distinguish "user has zero open positions" (success, empty list)
         # from "the positions API failed" (any non-None error). Returning
-        # only [] in both cases was misleading to the user. Virtue 3 + 9.
+        # only [] in both cases was misleading to the user.
         user = self.ent_funder.get().strip()
         if not user:
             self.last_positions_fetch_error = None
@@ -1327,8 +1327,21 @@ class PolyQuickTrader:
             self.logger.error("读取持仓失败: %s", msg)
             self.last_positions_fetch_error = msg
             return []
+        # Only treat the call as successful if the response shape is what
+        # the API contract promises (a list). Other shapes (dict with an
+        # error key, malformed JSON parsed as something else) used to be
+        # silently dropped to [] with the error flag still cleared —
+        # exactly the "API failed looks like empty portfolio" hazard the
+        # error flag was added to prevent. Order matters: classify first,
+        # then set the flag.
+        if not isinstance(data, list):
+            shape = type(data).__name__
+            msg = f"unexpected response shape: {shape}"
+            self.logger.error("持仓接口返回非列表 (%s)", shape)
+            self.last_positions_fetch_error = msg
+            return []
         self.last_positions_fetch_error = None
-        return data if isinstance(data, list) else []
+        return data
 
     def refresh_positions_button_clicked(self):
         def worker():
