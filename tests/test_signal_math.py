@@ -55,13 +55,13 @@ def test_rsi_oscillating_near_50(bag):
 
 
 def test_market_horizon_uses_period_default_when_no_end_dt(bag):
-    # No QuickMarket → mapping default falls through to 15 (the dict default key
+    # No PolyMarket → mapping default falls through to 15 (the dict default key
     # behavior when period == "")
     assert bag.market_horizon_minutes(None) == 15
 
 
 def test_market_horizon_known_period_strings(bag):
-    # Build a minimal QuickMarket-shaped object — only .period and .end_dt are
+    # Build a minimal PolyMarket-shaped object — only .period and .end_dt are
     # read by market_horizon_minutes.
     class _Mkt:
         end_dt = None

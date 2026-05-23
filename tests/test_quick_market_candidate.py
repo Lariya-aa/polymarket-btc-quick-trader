@@ -45,11 +45,11 @@ _NOW = datetime(2026, 5, 22, 12, 0, 0, tzinfo=timezone.utc)
 def test_happy_path_returns_quick_market(bag):
     candidate = bag.quick_market_candidate(_event(), _market(), _NOW)
     assert candidate is not None
-    assert candidate.up_bid == 0.45
-    assert candidate.up_ask == 0.55
+    assert candidate.yes_bid == 0.45
+    assert candidate.yes_ask == 0.55
     # Down side is derived from 1 - ask / 1 - bid:
-    assert candidate.down_bid == pytest.approx(0.45)  # 1 - 0.55
-    assert candidate.down_ask == pytest.approx(0.55)  # 1 - 0.45
+    assert candidate.no_bid == pytest.approx(0.45)  # 1 - 0.55
+    assert candidate.no_ask == pytest.approx(0.55)  # 1 - 0.45
     assert candidate.spread == pytest.approx(0.10)
     assert candidate.period == "5m"
 

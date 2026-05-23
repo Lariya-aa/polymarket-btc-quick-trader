@@ -73,7 +73,14 @@ MINIMAX_REPAIR_TOKEN_BUDGET = 800
 
 
 @dataclass
-class QuickMarket:
+class PolyMarket:
+    """One Polymarket binary outcome market (Yes / No).
+
+    Naming uses Polymarket's native vocabulary (Yes/No) rather than the
+    UI-shorthand Up/Down that this app started with for BTC-only use.
+    For BTC-Up/Down markets, Yes == "BTC will go up" and No == "BTC will
+    go down" — same tokens, just different display labels in the UI.
+    """
     slug: str
     event_slug: str
     question: str
@@ -83,10 +90,10 @@ class QuickMarket:
     period: str
     end_dt: datetime | None
     ended: bool
-    up_bid: float
-    up_ask: float
-    down_bid: float
-    down_ask: float
+    yes_bid: float
+    yes_ask: float
+    no_bid: float
+    no_ask: float
     spread: float
     volume24h: float
 
@@ -151,7 +158,7 @@ class PolyQuickTrader:
         self.root.title("Polymarket BTC 快速交易工具")
         self.root.geometry("1060x860")
 
-        self.latest_quick_markets: list[QuickMarket] = []
+        self.latest_quick_markets: list[PolyMarket] = []
         self.latest_positions = []
         self.latest_signal = None
         self.last_positions_fetch_error: str | None = None
@@ -566,7 +573,7 @@ class PolyQuickTrader:
         if best_bid is None or best_ask is None or best_bid <= 0 or best_ask >= 1 or best_bid >= best_ask:
             return None
 
-        return QuickMarket(
+        return PolyMarket(
             slug=slug,
             event_slug=event.get("slug") or slug,
             question=question,
@@ -576,10 +583,10 @@ class PolyQuickTrader:
             period=self.quick_period_from_slug_or_title(slug, question),
             end_dt=end_dt,
             ended=bool(end_dt and end_dt <= now),
-            up_bid=best_bid,
-            up_ask=best_ask,
-            down_bid=max(0.0, 1.0 - best_ask),
-            down_ask=min(1.0, 1.0 - best_bid),
+            yes_bid=best_bid,
+            yes_ask=best_ask,
+            no_bid=max(0.0, 1.0 - best_ask),
+            no_ask=min(1.0, 1.0 - best_bid),
             spread=best_ask - best_bid,
             volume24h=self._float_or_zero(market.get("volume24hrClob") or market.get("volume24hr")),
         )
@@ -611,8 +618,8 @@ class PolyQuickTrader:
             values = (
                 market.period,
                 end_text,
-                f"{market.up_bid:.2f}/{market.up_ask:.2f}",
-                f"{market.down_bid:.2f}/{market.down_ask:.2f}",
+                f"{market.yes_bid:.2f}/{market.yes_ask:.2f}",
+                f"{market.no_bid:.2f}/{market.no_ask:.2f}",
                 f"{market.spread:.2f}",
                 f"{market.volume24h:.0f}",
                 market.question[:100],
@@ -658,7 +665,7 @@ class PolyQuickTrader:
 
         threading.Thread(target=worker, daemon=True).start()
 
-    async def fetch_btc_signal(self, selected_market: QuickMarket | None = None):
+    async def fetch_btc_signal(self, selected_market: PolyMarket | None = None):
         horizon_minutes = self.market_horizon_minutes(selected_market)
         lookback = max(80, min(1000, horizon_minutes * 4 + 40))
         params = {"symbol": "BTCUSDT", "interval": "1m", "limit": str(lookback)}
@@ -730,7 +737,7 @@ class PolyQuickTrader:
             "vol": vol,
         }
 
-    def market_horizon_minutes(self, selected_market: QuickMarket | None):
+    def market_horizon_minutes(self, selected_market: PolyMarket | None):
         if selected_market and selected_market.end_dt:
             seconds_left = (selected_market.end_dt - datetime.now(timezone.utc)).total_seconds()
             if seconds_left > 0:
@@ -743,17 +750,17 @@ class PolyQuickTrader:
         steps = max(1, min(minutes, len(closes) - 1))
         return closes[-1] / closes[-steps - 1] - 1.0
 
-    async def fetch_minimax_prediction(self, signal, api_key: str, selected_market: QuickMarket | None = None):
+    async def fetch_minimax_prediction(self, signal, api_key: str, selected_market: PolyMarket | None = None):
         market_block = {}
         if selected_market:
             market_block = {
                 "question": selected_market.question,
                 "period": selected_market.period,
                 "end_time": selected_market.end_dt.isoformat() if selected_market.end_dt else None,
-                "up_bid": selected_market.up_bid,
-                "up_ask": selected_market.up_ask,
-                "down_bid": selected_market.down_bid,
-                "down_ask": selected_market.down_ask,
+                "yes_bid": selected_market.yes_bid,
+                "yes_ask": selected_market.yes_ask,
+                "no_bid": selected_market.no_bid,
+                "no_ask": selected_market.no_ask,
                 "spread": selected_market.spread,
                 "volume24h": selected_market.volume24h,
             }
@@ -991,7 +998,7 @@ class PolyQuickTrader:
 
         threading.Thread(target=worker, daemon=True).start()
 
-    async def buy_quick_market(self, market: QuickMarket, direction: str, usdc_amount: float, max_price: float):
+    async def buy_quick_market(self, market: PolyMarket, direction: str, usdc_amount: float, max_price: float):
         config = self.validate_credentials_config()
         creds = ApiCreds(config["api_key"], config["secret"], config["passphrase"]) if config["api_key"] else await self.derive_api_creds()
         if creds is None:
