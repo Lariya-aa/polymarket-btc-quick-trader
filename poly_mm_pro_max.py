@@ -823,9 +823,25 @@ class PolyQuickTrader:
             if idx < len(self.latest_quick_markets):
                 selected_market = self.latest_quick_markets[idx]
         category = selected_market.category if selected_market else "BTC"
+        minimax_key = self.ent_minimax_key.get().strip()
+        # Non-BTC categories have no local probability heuristic (only
+        # the Binance K-line model exists, and it's BTC-only). When the
+        # user hits AI on an NBA/NFL/WC/NEW market without a MiniMax
+        # key configured, the previous code silently produced a
+        # quote-only signal with no prediction at all. Surface the
+        # missing-key condition so the user knows why nothing useful
+        # came back.
+        if category != "BTC" and not minimax_key:
+            messagebox.showerror(
+                "缺少 MiniMax key",
+                f"[{category}] 类目目前依赖 MiniMax 给出概率（本地无启发式）。\n"
+                "请在凭证配置里填入 Token Plan Key 后重试。",
+            )
+            self.btn_predict_quick.configure(state="normal", text="AI概率判断")
+            self.logger.warning("跳过 AI 判断：%s 类目需要 MiniMax key", category)
+            return
         self.lbl_quick_signal.configure(text=f"正在计算 [{category}] 概率... {datetime.now().strftime('%H:%M:%S')}")
         self.logger.info("开始计算 [%s] AI 概率。", category)
-        minimax_key = self.ent_minimax_key.get().strip()
 
         def worker():
             loop = asyncio.new_event_loop()
