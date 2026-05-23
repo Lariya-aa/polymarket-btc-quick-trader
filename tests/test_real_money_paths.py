@@ -1,0 +1,295 @@
+"""Tests for the real-money order paths (buy/sell) and fetch_positions
+shape-handling. These were the four BLOCKER findings from the Codex
+review pass-1.
+
+We stub py_clob_client_v2 + the order-submission path with MagicMock /
+custom sync stubs so no real HTTP / no wallet touch / no $$$ moves.
+"""
+
+import asyncio
+import time
+from datetime import datetime, timezone
+from unittest.mock import MagicMock
+
+import pytest
+
+import poly_mm_pro_max as M
+
+
+# ── shared fixtures ───────────────────────────────────────────────────────
+
+
+def _trader():
+    """Build a PolyQuickTrader instance without invoking its __init__
+    (which would create Tk widgets, open log files, etc.). Same trick
+    the bag fixture uses, but we need a real instance because the
+    methods under test call self.logger and self.ent_funder."""
+    t = M.PolyQuickTrader.__new__(M.PolyQuickTrader)
+    import logging
+    t.logger = logging.getLogger("test_trader")
+    t.logger.addHandler(logging.NullHandler())
+    t.last_positions_fetch_error = None
+    return t
+
+
+@pytest.fixture
+def trader():
+    return _trader()
+
+
+def _btc_market():
+    return M.PolyMarket(
+        slug="btc-x", event_slug="btc-x", question="Will BTC go up?",
+        yes_id="yes-token", no_id="no-token",
+        tick_size="0.01", period="5m", end_dt=None, ended=False,
+        yes_bid=0.45, yes_ask=0.55, no_bid=0.45, no_ask=0.55,
+        spread=0.1, volume24h=10000.0, category="BTC", subject="5m",
+    )
+
+
+# ── buy_quick_market: timeout + reject branches ───────────────────────────
+
+
+def test_buy_timeout_raises_with_local_attempt_id(trader, monkeypatch):
+    """The whole point of local_attempt_id: when the 25s wait_for times
+    out, the user must see a uuid they can grep against the log to
+    reconcile, plus a message explicitly telling them NOT to retry."""
+    market = _btc_market()
+
+    monkeypatch.setattr(trader, "validate_credentials_config", lambda: {
+        "priv_key": "0xkey", "api_key": "k", "secret": "s",
+        "passphrase": "p", "funder": "0xfunder", "signature_type": 3,
+    })
+    async def fake_best_ask(self, client, token_id):
+        return 0.50, "0.01"
+    monkeypatch.setattr(M.PolyQuickTrader, "best_ask_for_token", fake_best_ask)
+    # Sync stub: production code wraps the CLOB call with
+    # asyncio.to_thread() which expects a sync callable. An async stub
+    # would bypass the threading and the timeout would never fire.
+    def slow_post(*args, **kwargs):
+        time.sleep(0.5)
+        return {"success": True}
+    fake_client = MagicMock()
+    fake_client.create_and_post_order = slow_post
+    monkeypatch.setattr(trader, "build_client", lambda c, cr: fake_client)
+    monkeypatch.setattr(M, "ORDER_SUBMIT_TIMEOUT_SECONDS", 0.05)
+
+    with pytest.raises(RuntimeError) as exc:
+        asyncio.run(trader.buy_quick_market(market, "UP", 5.0, 0.99))
+    msg = str(exc.value)
+    assert "超时" in msg
+    assert "local_attempt_id=" in msg
+    # UUIDv4 has 4 dashes embedded in the printed id.
+    assert len([c for c in msg if c == "-"]) >= 4
+    # Critical for real money: don't-retry guidance must be present.
+    assert "切勿" in msg or "勿" in msg
+
+
+def test_buy_rejected_raises_with_local_attempt_id(trader, monkeypatch):
+    """If the exchange returns success: False, surface the local id so
+    the user can correlate with their wallet activity."""
+    market = _btc_market()
+    monkeypatch.setattr(trader, "validate_credentials_config", lambda: {
+        "priv_key": "0xkey", "api_key": "k", "secret": "s",
+        "passphrase": "p", "funder": "0xfunder", "signature_type": 3,
+    })
+    fake_client = MagicMock()
+    fake_client.create_and_post_order = MagicMock(return_value={
+        "success": False, "errorMsg": "insufficient balance",
+    })
+    monkeypatch.setattr(trader, "build_client", lambda c, cr: fake_client)
+    async def fake_best_ask(self, client, token_id):
+        return 0.50, "0.01"
+    monkeypatch.setattr(M.PolyQuickTrader, "best_ask_for_token", fake_best_ask)
+
+    with pytest.raises(RuntimeError) as exc:
+        asyncio.run(trader.buy_quick_market(market, "UP", 5.0, 0.99))
+    msg = str(exc.value)
+    assert "local_attempt_id=" in msg
+    assert "拒绝" in msg
+
+
+def test_buy_rejects_when_ask_above_max_price(trader, monkeypatch):
+    """Price-protection layer: if the order book best_ask exceeds the
+    user's stated max_price, refuse to submit. No order should be
+    submitted, no local_attempt_id generated."""
+    market = _btc_market()
+    monkeypatch.setattr(trader, "validate_credentials_config", lambda: {
+        "priv_key": "0xkey", "api_key": "k", "secret": "s",
+        "passphrase": "p", "funder": "0xfunder", "signature_type": 3,
+    })
+    submission_calls = []
+    fake_client = MagicMock()
+    fake_client.create_and_post_order = MagicMock(
+        side_effect=lambda *a, **kw: submission_calls.append(kw) or {})
+    monkeypatch.setattr(trader, "build_client", lambda c, cr: fake_client)
+    async def expensive_ask(self, client, token_id):
+        return 0.80, "0.01"
+    monkeypatch.setattr(M.PolyQuickTrader, "best_ask_for_token", expensive_ask)
+
+    with pytest.raises(RuntimeError) as exc:
+        asyncio.run(trader.buy_quick_market(market, "UP", 5.0, 0.50))
+    assert "高于最高价" in str(exc.value)
+    assert submission_calls == [], "should not submit when ask > max_price"
+
+
+# ── sell_position_limit: timeout branch ───────────────────────────────────
+
+
+def test_sell_timeout_raises_with_local_attempt_id(trader, monkeypatch):
+    position = {
+        "asset": "yes-token", "outcome": "Yes",
+        "orderPriceMinTickSize": "0.01",
+        "title": "test", "slug": "test", "eventSlug": "test",
+    }
+    monkeypatch.setattr(trader, "validate_credentials_config", lambda: {
+        "priv_key": "0xkey", "api_key": "k", "secret": "s",
+        "passphrase": "p", "funder": "0xfunder", "signature_type": 3,
+    })
+    def slow_post(*args, **kwargs):
+        time.sleep(0.5)
+        return {"success": True}
+    fake_client = MagicMock()
+    fake_client.create_and_post_order = slow_post
+    monkeypatch.setattr(trader, "build_client", lambda c, cr: fake_client)
+    monkeypatch.setattr(M, "ORDER_SUBMIT_TIMEOUT_SECONDS", 0.05)
+
+    with pytest.raises(RuntimeError) as exc:
+        asyncio.run(trader.sell_position_limit(position, size=10.0, price=0.5))
+    msg = str(exc.value)
+    assert "超时" in msg
+    assert "local_attempt_id=" in msg
+    assert "卖出" in msg
+
+
+# ── fetch_positions: response-shape branches ──────────────────────────────
+
+
+def test_fetch_positions_empty_user_returns_empty_no_error(trader):
+    """No funder address → return empty + don't set error (this is the
+    "user hasn't filled in their wallet yet" case, not an API failure)."""
+    fake_entry = MagicMock()
+    fake_entry.get.return_value = "   "  # whitespace
+    trader.ent_funder = fake_entry
+    trader.last_positions_fetch_error = "stale prior error"
+
+    result = asyncio.run(trader.fetch_positions())
+    assert result == []
+    assert trader.last_positions_fetch_error is None
+
+
+def test_fetch_positions_non_200_sets_error(trader, monkeypatch):
+    """HTTP 502 from the positions API: error flag must be set so the
+    UI shows '⚠ 持仓接口失败' instead of misleading silence."""
+    fake_entry = MagicMock()
+    fake_entry.get.return_value = "0xfunder"
+    trader.ent_funder = fake_entry
+
+    class _FakeResp:
+        status = 502
+        async def json(self): return []
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): pass
+
+    class _FakeSession:
+        def __init__(self, *a, **kw): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): pass
+        def get(self, *a, **kw): return _FakeResp()
+
+    monkeypatch.setattr(M.aiohttp, "ClientSession", _FakeSession)
+
+    result = asyncio.run(trader.fetch_positions())
+    assert result == []
+    assert trader.last_positions_fetch_error is not None
+    assert "502" in trader.last_positions_fetch_error
+
+
+def test_fetch_positions_non_list_sets_error(trader, monkeypatch):
+    """200 OK but body is a dict (e.g. {"error": "..."} or some other
+    schema drift): MUST set last_positions_fetch_error. This is the
+    BLOCKER #2 bug that was fixed in commit ca16ecd."""
+    fake_entry = MagicMock()
+    fake_entry.get.return_value = "0xfunder"
+    trader.ent_funder = fake_entry
+    trader.last_positions_fetch_error = "stale prior error"
+
+    class _FakeResp:
+        status = 200
+        async def json(self): return {"error": "bad request"}
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): pass
+
+    class _FakeSession:
+        def __init__(self, *a, **kw): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): pass
+        def get(self, *a, **kw): return _FakeResp()
+
+    monkeypatch.setattr(M.aiohttp, "ClientSession", _FakeSession)
+
+    result = asyncio.run(trader.fetch_positions())
+    assert result == []
+    assert trader.last_positions_fetch_error is not None, \
+        "non-list response must set the error flag"
+    assert "shape" in trader.last_positions_fetch_error or "dict" in trader.last_positions_fetch_error
+
+
+def test_fetch_positions_list_response_clears_error(trader, monkeypatch):
+    """Genuine empty list response should clear any prior error so the
+    UI doesn't carry stale '⚠' state forever."""
+    fake_entry = MagicMock()
+    fake_entry.get.return_value = "0xfunder"
+    trader.ent_funder = fake_entry
+    trader.last_positions_fetch_error = "stale prior error"
+
+    class _FakeResp:
+        status = 200
+        async def json(self): return []  # zero positions, but valid shape
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): pass
+
+    class _FakeSession:
+        def __init__(self, *a, **kw): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): pass
+        def get(self, *a, **kw): return _FakeResp()
+
+    monkeypatch.setattr(M.aiohttp, "ClientSession", _FakeSession)
+
+    result = asyncio.run(trader.fetch_positions())
+    assert result == []
+    assert trader.last_positions_fetch_error is None
+
+
+def test_fetch_positions_exception_sets_error(trader, monkeypatch):
+    """Network exception path: error flag set + result is empty list."""
+    fake_entry = MagicMock()
+    fake_entry.get.return_value = "0xfunder"
+    trader.ent_funder = fake_entry
+
+    class _FakeSession:
+        def __init__(self, *a, **kw):
+            raise OSError("DNS lookup failed")
+
+    monkeypatch.setattr(M.aiohttp, "ClientSession", _FakeSession)
+
+    result = asyncio.run(trader.fetch_positions())
+    assert result == []
+    assert trader.last_positions_fetch_error is not None
+    assert "OSError" in trader.last_positions_fetch_error
+
+
+# ── _display_direction (UI mapping helper added in commit 160eacb) ────────
+
+
+def test_display_direction_maps_up_to_yes(bag):
+    assert bag._display_direction("UP") == "Yes"
+
+
+def test_display_direction_maps_down_to_no(bag):
+    assert bag._display_direction("DOWN") == "No"
+
+
+def test_display_direction_passthrough_unknown(bag):
+    assert bag._display_direction("FOO") == "FOO"
