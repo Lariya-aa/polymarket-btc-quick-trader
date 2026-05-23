@@ -658,8 +658,12 @@ class PolyQuickTrader:
                     markets.append(item)
             if len(markets) >= limit:
                 break
-        # Newest first, instead of soonest-ending.
-        markets.sort(key=lambda item: item.end_dt or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+        # Preserve the API's createdAt-desc order. We previously re-sorted
+        # by end_dt desc here, which inverted intent — newly-listed markets
+        # often have end_dt far in the future, so end_dt-desc bubbled
+        # not-recently-listed-but-far-out markets to the top. The /events
+        # endpoint already returns rows in createdAt-desc order per the
+        # query params, so no local sort is needed.
         return markets[:limit]
 
     def generated_btc_updown_slugs(self):
