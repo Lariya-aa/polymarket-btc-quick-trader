@@ -1,11 +1,11 @@
 import asyncio
-import fcntl
 import json
 import logging
 import math
 import os
 import re
 import sys
+import tempfile
 import threading
 import time
 import tkinter as tk
@@ -21,9 +21,14 @@ from py_clob_client_v2.client import ClobClient
 from py_clob_client_v2.clob_types import ApiCreds
 
 
+# Filenames only — resolved at runtime by config_path() / log_path() /
+# lock_path() below. They live under user_data_dir() so a packaged .app
+# or .exe (which has unpredictable CWD) writes to a stable per-user
+# location instead of scattering files next to the binary.
 CONFIG_FILE = "poly_config_pro.json"
 LOG_FILE = "poly_mm_pro_max.log"
-LOCK_FILE = "/tmp/poly_mm_pro_max.lock"
+LOCK_FILE = "poly_mm_pro_max.lock"
+APP_DIR_NAME = "PolyMarketTrader"
 GAMMA_EVENT_SLUG_URL = "https://gamma-api.polymarket.com/events/slug"
 POLYMARKET_BASE_URL = "https://polymarket.com"
 CLOB_HOST = "https://clob.polymarket.com"
@@ -74,6 +79,43 @@ class QuickMarket:
     volume24h: float
 
 
+def user_data_dir() -> str:
+    """Per-OS writable directory for the app's config, log, and any
+    future state file.
+
+    macOS:   ~/Library/Application Support/PolyMarketTrader
+    Windows: %APPDATA%\\PolyMarketTrader  (typically C:\\Users\\X\\AppData\\Roaming)
+    Linux:   $XDG_DATA_HOME/PolyMarketTrader  or  ~/.local/share/PolyMarketTrader
+
+    The directory is created on first call. Used so a packaged .app /
+    .exe (whose CWD is unpredictable) doesn't drop files into random
+    locations next to the binary.
+    """
+    if sys.platform == "darwin":
+        base = os.path.expanduser("~/Library/Application Support")
+    elif sys.platform == "win32":
+        base = os.environ.get("APPDATA") or os.path.expanduser("~")
+    else:
+        base = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+    path = os.path.join(base, APP_DIR_NAME)
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def config_path() -> str:
+    return os.path.join(user_data_dir(), CONFIG_FILE)
+
+
+def log_path() -> str:
+    return os.path.join(user_data_dir(), LOG_FILE)
+
+
+def lock_path() -> str:
+    # Lock lives in tempdir, not user-data, so a wedged lock doesn't
+    # persist across reboots (most OSes wipe tempdir on boot).
+    return os.path.join(tempfile.gettempdir(), LOCK_FILE)
+
+
 class TkinterLogHandler(logging.Handler):
     def __init__(self, text_widget):
         super().__init__()
@@ -111,7 +153,7 @@ class PolyQuickTrader:
         handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", "%H:%M:%S"))
         self.logger.addHandler(handler)
 
-        file_handler = logging.FileHandler(LOG_FILE, encoding="utf-8")
+        file_handler = logging.FileHandler(log_path(), encoding="utf-8")
         file_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
         self.logger.addHandler(file_handler)
 
@@ -305,18 +347,34 @@ class PolyQuickTrader:
 
     def save_config_to_local(self):
         try:
-            with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+            path = config_path()
+            with open(path, "w", encoding="utf-8") as f:
                 json.dump(self.safe_config(), f, indent=4, ensure_ascii=False)
-            os.chmod(CONFIG_FILE, 0o600)
-            self.logger.info("已保存非敏感配置。")
+            # Best-effort: 0o600 is a no-op on Windows but harmless.
+            try:
+                os.chmod(path, 0o600)
+            except OSError:
+                pass
+            self.logger.info("已保存非敏感配置 → %s", path)
         except Exception as e:
             self.logger.error("保存配置失败: %s", e)
 
     def load_config_from_local(self):
-        if not os.path.exists(CONFIG_FILE):
+        path = config_path()
+        # Migration: older versions wrote the config next to poly_mm_pro_max.py
+        # (CWD-relative). If the user has an old file there and no new file in
+        # user-data dir yet, move it. One-shot, safe to re-run.
+        legacy = CONFIG_FILE  # CWD-relative
+        if not os.path.exists(path) and os.path.exists(legacy):
+            try:
+                os.replace(legacy, path)
+                self.logger.info("已迁移旧配置 %s → %s", legacy, path)
+            except OSError as e:
+                self.logger.warning("迁移旧配置失败: %s", e)
+        if not os.path.exists(path):
             return
         try:
-            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+            with open(path, "r", encoding="utf-8") as f:
                 config = json.load(f)
             leaked_keys = {"priv_key", "api_key", "secret", "passphrase", "sendkey", "minimax_key"} & set(config)
             if leaked_keys:
@@ -1282,10 +1340,53 @@ class PolyQuickTrader:
 
 
 def acquire_single_instance_lock():
-    lock_file = open(LOCK_FILE, "w", encoding="utf-8")
+    """Return an open file handle that holds an OS-level lock, or None if
+    another instance is already running.
+
+    Implementation differs by platform because Python's stdlib doesn't
+    ship a portable advisory file-lock primitive:
+      - Unix (macOS/Linux): fcntl.flock with LOCK_EX | LOCK_NB
+      - Windows:            msvcrt.locking with LK_NBLCK on 1 byte
+
+    On both platforms the OS releases the lock automatically when the
+    process exits (or when the returned handle is GC'd / closed). We
+    never need to delete the lock file.
+    """
+    path = lock_path()
+
+    if sys.platform == "win32":
+        import msvcrt
+        # Open in append-update mode so an existing lockfile (from a
+        # crashed prior run) is not truncated before we attempt to lock.
+        lock_file = open(path, "a+", encoding="utf-8")
+        try:
+            # msvcrt.locking() locks `nbytes` from the current file
+            # position. Ensure the file has at least 1 byte to lock
+            # against, then reset position before calling.
+            if lock_file.tell() == 0:
+                lock_file.write(" ")
+                lock_file.flush()
+            lock_file.seek(0)
+            msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+        except OSError:
+            lock_file.close()
+            print("PolyQuickTrader is already running.", file=sys.stderr)
+            return None
+        # We hold the lock — overwrite the body with the current PID for
+        # diagnostics. (Truncating doesn't release the lock.)
+        lock_file.seek(0)
+        lock_file.truncate()
+        lock_file.write(str(os.getpid()))
+        lock_file.flush()
+        return lock_file
+
+    # Unix path (macOS, Linux, BSD)
+    import fcntl
+    lock_file = open(path, "w", encoding="utf-8")
     try:
         fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
+    except (BlockingIOError, OSError):
+        lock_file.close()
         print("PolyQuickTrader is already running.", file=sys.stderr)
         return None
     lock_file.write(str(os.getpid()))
