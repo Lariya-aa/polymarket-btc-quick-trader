@@ -1238,6 +1238,40 @@ class PolyQuickTrader:
             return "No"
         return direction
 
+    def _prompt_reconcile_after_timeout(self, button_attr_names: tuple, action_label: str) -> None:
+        """Show a modal that BLOCKS retry until the user confirms they've
+        reconciled the in-flight order on polymarket.com/portfolio.
+
+        Background: asyncio.wait_for cancels the await, but the OS thread
+        spawned by asyncio.to_thread keeps running until the CLOB call
+        returns. So a TimeoutError raised in the order path does NOT
+        prove the order was rejected — it may still land on the exchange
+        seconds later. If we re-enable the buy/sell buttons immediately,
+        a user who missed the log line could click again and submit a
+        duplicate. This dialog is the explicit reconciliation gate.
+
+        button_attr_names: e.g. ("btn_buy_up", "btn_buy_down"). The
+            referenced buttons are re-enabled only when the user clicks
+            Yes confirming reconciliation.
+        action_label: "买入" / "卖出" — used in the dialog text.
+        """
+        ack = messagebox.askyesno(
+            f"{action_label}订单超时未确认",
+            f"{action_label}订单已发出但未在限定时间内收到交易所响应。\n"
+            f"订单可能仍在排队成交（线程仍在后台运行）。\n\n"
+            "请打开 https://polymarket.com/portfolio 核对该笔订单是否成交，\n"
+            "完成核对后再点 Yes 重新启用按钮。\n"
+            "在那之前请不要再次点击。",
+        )
+        if ack:
+            for name in button_attr_names:
+                btn = getattr(self, name, None)
+                if btn is not None:
+                    btn.configure(state="normal")
+            self.logger.info("用户确认已核对超时订单，已重新启用 %s 按钮", action_label)
+        else:
+            self.logger.warning("用户拒绝确认核对，%s 按钮保持禁用", action_label)
+
     def buy_selected_quick_market(self, direction: str):
         market = self.selected_quick_market()
         if not market:
@@ -1269,16 +1303,31 @@ class PolyQuickTrader:
 
         def worker():
             loop = asyncio.new_event_loop()
+            timed_out = False
             try:
                 resp = loop.run_until_complete(self.buy_quick_market(market, direction, usdc_amount, max_price))
                 self.root.after(0, lambda: self.logger.info("快速买入提交结果: %s", resp))
             except Exception as e:
                 error_text = str(e) or repr(e)
+                if "超时" in error_text:
+                    timed_out = True
                 self.root.after(0, lambda err=error_text: self.logger.error("快速买入失败: %s", err))
             finally:
                 loop.close()
-                self.root.after(0, lambda: self.btn_buy_up.configure(state="normal"))
-                self.root.after(0, lambda: self.btn_buy_down.configure(state="normal"))
+                # On timeout: do NOT re-enable buy buttons automatically.
+                # The underlying CLOB call thread is still running and the
+                # order may still land. Leaving the buttons disabled forces
+                # the user through _prompt_reconcile_after_timeout, which
+                # only re-enables after they confirm they've checked
+                # polymarket.com/portfolio. Without this, a user who
+                # missed the log line could click again and submit a
+                # duplicate.
+                if timed_out:
+                    self.root.after(0, lambda: self._prompt_reconcile_after_timeout(
+                        ("btn_buy_up", "btn_buy_down"), "买入"))
+                else:
+                    self.root.after(0, lambda: self.btn_buy_up.configure(state="normal"))
+                    self.root.after(0, lambda: self.btn_buy_down.configure(state="normal"))
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -1494,16 +1543,30 @@ class PolyQuickTrader:
         if not messagebox.askyesno("确认限价卖出", text):
             return
 
+        self.btn_sell_limit.configure(state="disabled")
+
         def worker():
             loop = asyncio.new_event_loop()
+            timed_out = False
             try:
                 resp = loop.run_until_complete(self.sell_position_limit(position, size, price))
                 self.root.after(0, lambda: self.logger.info("卖出限价单提交结果: %s", resp))
             except Exception as e:
                 error_text = str(e) or repr(e)
+                if "超时" in error_text:
+                    timed_out = True
                 self.root.after(0, lambda err=error_text: self.logger.error("卖出限价单失败: %s", err))
             finally:
                 loop.close()
+                # Same in-flight guard as the buy worker — don't re-enable
+                # the sell button on TimeoutError because the underlying
+                # thread may still be mid-submit. User must confirm
+                # reconciliation before retry.
+                if timed_out:
+                    self.root.after(0, lambda: self._prompt_reconcile_after_timeout(
+                        ("btn_sell_limit",), "卖出"))
+                else:
+                    self.root.after(0, lambda: self.btn_sell_limit.configure(state="normal"))
 
         threading.Thread(target=worker, daemon=True).start()
 
