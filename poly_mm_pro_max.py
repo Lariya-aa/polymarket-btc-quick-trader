@@ -51,11 +51,14 @@ class QuickMarket:
 
 
 class TkinterLogHandler(logging.Handler):
-    def __init__(self, text_widget):
+    def __init__(self, text_widget, category=None):
         super().__init__()
         self.text_widget = text_widget
+        self.category = category
 
     def emit(self, record):
+        if self.category and getattr(record, "category", "manual") != self.category:
+            return
         msg = self.format(record)
 
         def append():
@@ -79,15 +82,22 @@ class PolyQuickTrader:
         self.paper_results = []
         self.paper_strategy_running = False
         self.paper_strategy_stop_requested = threading.Event()
+        self.log_context = threading.local()
 
         self.logger = logging.getLogger("PolyQuickTrader")
         self.logger.setLevel(logging.INFO)
         self.logger.handlers.clear()
 
         self.setup_ui()
-        handler = TkinterLogHandler(self.log_text)
-        handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", "%H:%M:%S"))
-        self.logger.addHandler(handler)
+        self.logger.addFilter(self.log_category_filter)
+
+        manual_handler = TkinterLogHandler(self.manual_log_text, category="manual")
+        manual_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", "%H:%M:%S"))
+        self.logger.addHandler(manual_handler)
+
+        auto_handler = TkinterLogHandler(self.auto_log_text, category="auto")
+        auto_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", "%H:%M:%S"))
+        self.logger.addHandler(auto_handler)
 
         file_handler = logging.FileHandler(LOG_FILE, encoding="utf-8")
         file_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
@@ -96,6 +106,21 @@ class PolyQuickTrader:
         self.load_config_from_local()
         self.load_env_file()
         self.load_credentials_from_env()
+
+    def log_category_filter(self, record):
+        record.category = getattr(self.log_context, "category", "manual")
+        return True
+
+    def set_log_category(self, category):
+        self.log_context.category = category
+
+    def log_auto(self, level, message, *args):
+        old_category = getattr(self.log_context, "category", "manual")
+        self.log_context.category = "auto"
+        try:
+            self.logger.log(level, message, *args)
+        finally:
+            self.log_context.category = old_category
 
     def setup_ui(self):
         api_frame = ttk.LabelFrame(self.root, text=" 1. 凭证配置（私钥和 Key 不会写入本地配置文件） ", padding=10)
@@ -135,8 +160,16 @@ class PolyQuickTrader:
         self.ent_minimax_key = ttk.Entry(api_frame, show="*", width=82)
         self.ent_minimax_key.grid(row=4, column=1, columnspan=3, sticky="w", pady=3, padx=5)
 
-        quick_frame = ttk.LabelFrame(self.root, text=" 2. BTC 短周期快速买卖 ", padding=10)
-        quick_frame.pack(fill="x", padx=15, pady=5)
+        main_notebook = ttk.Notebook(self.root)
+        main_notebook.pack(fill="both", expand=True, padx=15, pady=5)
+
+        manual_tab = ttk.Frame(main_notebook)
+        auto_tab = ttk.Frame(main_notebook)
+        main_notebook.add(manual_tab, text="手动交易")
+        main_notebook.add(auto_tab, text="自动模拟")
+
+        quick_frame = ttk.LabelFrame(manual_tab, text=" BTC 短周期手动买卖 ", padding=10)
+        quick_frame.pack(fill="x", padx=0, pady=5)
 
         quick_ctrl_frame = ttk.Frame(quick_frame)
         quick_ctrl_frame.pack(fill="x", pady=(0, 8))
@@ -156,11 +189,8 @@ class PolyQuickTrader:
         self.btn_buy_up.pack(side="left", padx=4)
         self.btn_buy_down = ttk.Button(quick_ctrl_frame, text="买 Down", width=10, command=lambda: self.buy_selected_quick_market("DOWN"))
         self.btn_buy_down.pack(side="left", padx=4)
-        self.btn_paper_strategy = ttk.Button(quick_ctrl_frame, text="模拟自动策略", width=16, command=self.paper_strategy_button_clicked)
-        self.btn_paper_strategy.pack(side="left", padx=4)
-
-        paper_frame = ttk.Frame(quick_frame)
-        paper_frame.pack(fill="x", pady=(0, 8))
+        paper_frame = ttk.LabelFrame(auto_tab, text=" AI 判断自动模拟止盈 ", padding=10)
+        paper_frame.pack(fill="x", padx=0, pady=5)
         paper_row1 = ttk.Frame(paper_frame)
         paper_row1.pack(fill="x", pady=(0, 4))
         paper_row2 = ttk.Frame(paper_frame)
@@ -220,7 +250,12 @@ class PolyQuickTrader:
             self.quick_tree.column(col, width=quick_widths[col], anchor="center" if col != "question" else "w")
         self.quick_tree.pack(fill="x", expand=False)
 
-        paper_result_frame = ttk.LabelFrame(quick_frame, text=" 模拟结果 ", padding=6)
+        auto_ctrl_frame = ttk.Frame(auto_tab)
+        auto_ctrl_frame.pack(fill="x", pady=(0, 8))
+        self.btn_paper_strategy = ttk.Button(auto_ctrl_frame, text="模拟自动策略", width=16, command=self.paper_strategy_button_clicked)
+        self.btn_paper_strategy.pack(side="left", padx=4)
+
+        paper_result_frame = ttk.LabelFrame(auto_tab, text=" 模拟结果 ", padding=6)
         paper_result_frame.pack(fill="x", pady=(8, 0))
         self.paper_tree = ttk.Treeview(
             paper_result_frame,
@@ -257,8 +292,8 @@ class PolyQuickTrader:
             self.paper_tree.column(col, width=paper_widths[col], anchor="center" if col != "slug" else "w")
         self.paper_tree.pack(fill="x", expand=False)
 
-        pos_frame = ttk.LabelFrame(self.root, text=" 3. 持仓与卖出 ", padding=10)
-        pos_frame.pack(fill="x", padx=15, pady=5)
+        pos_frame = ttk.LabelFrame(manual_tab, text=" 持仓与卖出 ", padding=10)
+        pos_frame.pack(fill="x", padx=0, pady=5)
 
         self.positions_tree = ttk.Treeview(
             pos_frame,
@@ -293,17 +328,29 @@ class PolyQuickTrader:
         self.btn_save_config = ttk.Button(pos_btn_frame, text="保存非敏感配置", width=16, command=self.save_config_to_local)
         self.btn_save_config.pack(side="left", padx=4)
 
-        log_frame = ttk.LabelFrame(self.root, text=" 4. 运行日志 ", padding=10)
-        log_frame.pack(fill="both", expand=True, padx=15, pady=5)
-        self.log_text = scrolledtext.ScrolledText(
-            log_frame,
+        manual_log_frame = ttk.LabelFrame(manual_tab, text=" 手动交易日志 ", padding=10)
+        manual_log_frame.pack(fill="both", expand=True, padx=0, pady=5)
+        self.manual_log_text = scrolledtext.ScrolledText(
+            manual_log_frame,
             state="disabled",
-            height=18,
+            height=12,
             bg="#1f2937",
             fg="#e5e7eb",
             font=("Consolas", 10),
         )
-        self.log_text.pack(fill="both", expand=True)
+        self.manual_log_text.pack(fill="both", expand=True)
+
+        auto_log_frame = ttk.LabelFrame(auto_tab, text=" 自动模拟日志 ", padding=10)
+        auto_log_frame.pack(fill="both", expand=True, padx=0, pady=5)
+        self.auto_log_text = scrolledtext.ScrolledText(
+            auto_log_frame,
+            state="disabled",
+            height=16,
+            bg="#111827",
+            fg="#e5e7eb",
+            font=("Consolas", 10),
+        )
+        self.auto_log_text.pack(fill="both", expand=True)
 
     def load_credentials_from_env(self):
         env_map = {
@@ -404,7 +451,7 @@ class PolyQuickTrader:
         self._set_entry(self.ent_paper_decision_lead_seconds, "120")
         self._set_entry(self.ent_paper_rounds, "40")
         self._set_entry(self.ent_paper_max_hours, "12")
-        self.logger.info("已套用通宵模拟参数: 40 轮 / 12 小时 / 轮询 3 秒 / 开盘前 120 秒判断。")
+        self.log_auto(logging.INFO, "已套用通宵模拟参数: 40 轮 / 12 小时 / 轮询 3 秒 / 开盘前 120 秒判断。")
 
     def validate_credentials_config(self):
         config = {
@@ -982,7 +1029,8 @@ class PolyQuickTrader:
         self.render_paper_results()
         self.btn_paper_strategy.configure(state="disabled", text="模拟运行中")
         self.btn_stop_paper_strategy.configure(state="normal")
-        self.logger.info(
+        self.log_auto(
+            logging.INFO,
             "启动连续模拟策略: rounds=%s | max_hours=%.2f | next15m | usdc=%.2f | take_profit=%.2f | signal_threshold=%.0f%% | lead=%.0fs",
             config["rounds"],
             config["max_hours"],
@@ -993,13 +1041,14 @@ class PolyQuickTrader:
         )
 
         def worker():
+            self.set_log_category("auto")
             loop = asyncio.new_event_loop()
             try:
                 result = loop.run_until_complete(self.run_paper_strategy_series(config))
-                self.root.after(0, lambda result=result: self.logger.info("模拟策略结束: %s", result))
+                self.root.after(0, lambda result=result: self.log_auto(logging.INFO, "模拟策略结束: %s", result))
             except Exception as e:
                 error_text = str(e) or repr(e)
-                self.root.after(0, lambda err=error_text: self.logger.error("模拟策略失败: %s", err))
+                self.root.after(0, lambda err=error_text: self.log_auto(logging.ERROR, "模拟策略失败: %s", err))
             finally:
                 loop.close()
                 self.paper_strategy_running = False
@@ -1012,7 +1061,7 @@ class PolyQuickTrader:
         if self.paper_strategy_running:
             self.paper_strategy_stop_requested.set()
             self.btn_stop_paper_strategy.configure(state="disabled")
-            self.logger.warning("已请求停止连续模拟；当前等待/轮询会尽快退出。")
+            self.log_auto(logging.WARNING, "已请求停止连续模拟；当前等待/轮询会尽快退出。")
 
     async def run_paper_strategy_series(self, config):
         started_at = time.time()

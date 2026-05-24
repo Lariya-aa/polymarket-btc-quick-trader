@@ -11,6 +11,7 @@ Tkinter desktop tool for Polymarket BTC Up/Down short-cycle markets.
 - Paper-runs consecutive next-15m strategy rounds with a configurable pre-open decision window, simulation amount, fixed single-side >65% entry discipline, 0.60-style take profit, round count, time limit, overnight preset, stop button, per-round buy/sell/current-bid/high-bid/PnL table, direct CLOB order-book monitoring, concurrent open-position monitoring, and result notification.
 - Position refresh and limit-sell flow.
 - ServerChan notification for submitted trades, including current position PnL snapshot.
+- Separate tabs for manual trading and automated paper strategy, each with its own log output.
 
 ## Setup
 
