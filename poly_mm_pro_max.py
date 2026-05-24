@@ -28,6 +28,7 @@ CLOB_HOST = "https://clob.polymarket.com"
 MINIMAX_CHAT_URL = "https://api.minimaxi.com/v1/chat/completions"
 MINIMAX_MODEL = "MiniMax-M2.7"
 CHAIN_ID = 137
+PAPER_SIGNAL_THRESHOLD = 0.65
 
 
 @dataclass
@@ -169,18 +170,11 @@ class PolyQuickTrader:
         self.ent_paper_usdc = ttk.Entry(paper_row1, width=7)
         self.ent_paper_usdc.insert(0, "5")
         self.ent_paper_usdc.pack(side="left", padx=4)
-        ttk.Label(paper_row1, text="模拟入场上限:").pack(side="left", padx=(4, 4))
-        self.ent_paper_max_entry = ttk.Entry(paper_row1, width=7)
-        self.ent_paper_max_entry.insert(0, "0.52")
-        self.ent_paper_max_entry.pack(side="left", padx=4)
+        ttk.Label(paper_row1, text=f"开单阈值: 单边>{PAPER_SIGNAL_THRESHOLD:.0%}").pack(side="left", padx=(8, 4))
         ttk.Label(paper_row1, text="模拟止盈:").pack(side="left", padx=(8, 4))
         self.ent_paper_take_profit = ttk.Entry(paper_row1, width=7)
         self.ent_paper_take_profit.insert(0, "0.60")
         self.ent_paper_take_profit.pack(side="left", padx=4)
-        ttk.Label(paper_row1, text="最小概率:").pack(side="left", padx=(8, 4))
-        self.ent_paper_min_prob = ttk.Entry(paper_row1, width=7)
-        self.ent_paper_min_prob.insert(0, "0.60")
-        self.ent_paper_min_prob.pack(side="left", padx=4)
         ttk.Label(paper_row1, text="轮询秒:").pack(side="left", padx=(8, 4))
         self.ent_paper_poll_seconds = ttk.Entry(paper_row1, width=7)
         self.ent_paper_poll_seconds.insert(0, "10")
@@ -347,9 +341,7 @@ class PolyQuickTrader:
             "quick_usdc": self.ent_quick_usdc.get().strip(),
             "quick_max_price": self.ent_quick_max_price.get().strip(),
             "paper_usdc": self.ent_paper_usdc.get().strip(),
-            "paper_max_entry": self.ent_paper_max_entry.get().strip(),
             "paper_take_profit": self.ent_paper_take_profit.get().strip(),
-            "paper_min_prob": self.ent_paper_min_prob.get().strip(),
             "paper_poll_seconds": self.ent_paper_poll_seconds.get().strip(),
             "paper_decision_lead_seconds": self.ent_paper_decision_lead_seconds.get().strip(),
             "paper_rounds": self.ent_paper_rounds.get().strip(),
@@ -380,9 +372,7 @@ class PolyQuickTrader:
             self._set_entry(self.ent_quick_usdc, config.get("quick_usdc", "5"))
             self._set_entry(self.ent_quick_max_price, config.get("quick_max_price", "0.60"))
             self._set_entry(self.ent_paper_usdc, config.get("paper_usdc", "5"))
-            self._set_entry(self.ent_paper_max_entry, config.get("paper_max_entry", "0.52"))
             self._set_entry(self.ent_paper_take_profit, config.get("paper_take_profit", "0.60"))
-            self._set_entry(self.ent_paper_min_prob, config.get("paper_min_prob", "0.60"))
             self._set_entry(self.ent_paper_poll_seconds, config.get("paper_poll_seconds", "10"))
             self._set_entry(self.ent_paper_decision_lead_seconds, config.get("paper_decision_lead_seconds", "120"))
             self._set_entry(self.ent_paper_rounds, config.get("paper_rounds", "4"))
@@ -938,9 +928,8 @@ class PolyQuickTrader:
         try:
             config = {
                 "usdc": float(self.ent_paper_usdc.get().strip()),
-                "max_entry": float(self.ent_paper_max_entry.get().strip()),
                 "take_profit": float(self.ent_paper_take_profit.get().strip()),
-                "min_prob": float(self.ent_paper_min_prob.get().strip()),
+                "signal_threshold": PAPER_SIGNAL_THRESHOLD,
                 "poll_seconds": float(self.ent_paper_poll_seconds.get().strip()),
                 "decision_lead_seconds": float(self.ent_paper_decision_lead_seconds.get().strip()),
                 "rounds": int(float(self.ent_paper_rounds.get().strip())),
@@ -949,8 +938,8 @@ class PolyQuickTrader:
         except ValueError:
             messagebox.showerror("参数错误", "模拟策略参数必须是数字。")
             return
-        if config["usdc"] <= 0 or not (0 < config["max_entry"] < config["take_profit"] < 1) or not (0.5 <= config["min_prob"] <= 1):
-            messagebox.showerror("参数错误", "请确认：金额>0，0<入场上限<止盈<1，最小概率在 0.5 到 1 之间。")
+        if config["usdc"] <= 0 or not (0 < config["take_profit"] < 1):
+            messagebox.showerror("参数错误", "请确认：金额>0，止盈价在 0 到 1 之间。")
             return
         if config["poll_seconds"] < 3:
             messagebox.showerror("参数错误", "轮询秒数不要低于 3 秒。")
@@ -972,13 +961,12 @@ class PolyQuickTrader:
         self.btn_paper_strategy.configure(state="disabled", text="模拟运行中")
         self.btn_stop_paper_strategy.configure(state="normal")
         self.logger.info(
-            "启动连续模拟策略: rounds=%s | max_hours=%.2f | next15m | usdc=%.2f | max_entry=%.2f | take_profit=%.2f | min_prob=%.2f | lead=%.0fs",
+            "启动连续模拟策略: rounds=%s | max_hours=%.2f | next15m | usdc=%.2f | take_profit=%.2f | signal_threshold=%.0f%% | lead=%.0fs",
             config["rounds"],
             config["max_hours"],
             config["usdc"],
-            config["max_entry"],
             config["take_profit"],
-            config["min_prob"],
+            config["signal_threshold"] * 100,
             config["decision_lead_seconds"],
         )
 
@@ -1083,33 +1071,32 @@ class PolyQuickTrader:
         signal = await self.fetch_btc_signal(market)
         minimax_key = self.ent_minimax_key.get().strip()
         decision = await self.fetch_minimax_prediction(signal, minimax_key, market) if minimax_key else self.local_structured_decision(signal, market, "未配置 MiniMax")
-        action = decision.get("action", "NO_TRADE")
-        direction = "UP" if action == "BUY_UP" else "DOWN" if action == "BUY_DOWN" else ""
-        prob = decision.get("prob_up", 0.5) if direction == "UP" else decision.get("prob_down", 0.5) if direction == "DOWN" else 0.0
+        prob_up = self.normalize_probability(decision.get("prob_up"), signal.get("prob_up", 0.5))
+        prob_down = self.normalize_probability(decision.get("prob_down"), 1.0 - prob_up)
+        if prob_up >= prob_down:
+            direction = "UP"
+            action = "BUY_UP"
+            prob = prob_up
+        else:
+            direction = "DOWN"
+            action = "BUY_DOWN"
+            prob = prob_down
 
         self.logger.info(
-            "模拟入场判断: action=%s prob=%.1f%% source=%s reason=%s",
+            "模拟入场判断: action=%s prob=%.1f%% threshold=%.1f%% source=%s reason=%s",
             action,
             prob * 100,
+            config["signal_threshold"] * 100,
             decision.get("source", "MINIMAX"),
             decision.get("reason", ""),
         )
-        if action == "NO_TRADE" or not direction:
-            result = f"NO_TRADE | {decision.get('reason', '')}"
+        if prob <= config["signal_threshold"]:
+            result = f"未入场: 单边最高概率 {prob:.2f} 未超过固定阈值 {config['signal_threshold']:.2f}"
             await self.push_paper_strategy_result("未入场", market, decision, None, result)
             return {"round": round_index, "slug": market.slug, "status": "NO_TRADE", "direction": "", "entry": None, "exit": None, "pnl": 0.0, "pnl_pct": 0.0, "entered": False, "result": result}
-        if prob < config["min_prob"]:
-            result = f"未入场: 概率 {prob:.2f} 低于阈值 {config['min_prob']:.2f}"
-            await self.push_paper_strategy_result("未入场", market, decision, None, result)
-            return {"round": round_index, "slug": market.slug, "status": "NO_ENTRY", "direction": direction, "entry": None, "exit": None, "pnl": 0.0, "pnl_pct": 0.0, "entered": False, "result": result}
 
         market = await self.fetch_market_by_slug(market.slug) or market
         entry = market.up_ask if direction == "UP" else market.down_ask
-        if entry > config["max_entry"]:
-            result = f"未入场: {direction} ask={entry:.2f} 高于上限 {config['max_entry']:.2f}"
-            await self.push_paper_strategy_result("未入场", market, decision, None, result)
-            return {"round": round_index, "slug": market.slug, "status": "NO_ENTRY", "direction": direction, "entry": entry, "exit": None, "pnl": 0.0, "pnl_pct": 0.0, "entered": False, "result": result}
-
         paper = {
             "direction": direction,
             "entry": entry,
@@ -1138,6 +1125,15 @@ class PolyQuickTrader:
             "_paper": paper,
             "_start_ts": start_ts,
         }
+
+    def normalize_probability(self, value, default):
+        try:
+            prob = float(default if value is None else value)
+        except (TypeError, ValueError):
+            prob = float(default)
+        if prob > 1.0 and prob <= 100.0:
+            prob /= 100.0
+        return min(max(prob, 0.0), 1.0)
 
     async def monitor_paper_position(self, config, row):
         market = row["_market"]
