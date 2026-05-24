@@ -1008,6 +1008,7 @@ class PolyQuickTrader:
         started_at = time.time()
         deadline = started_at + config["max_hours"] * 3600
         results = []
+        monitor_tasks = []
         seen_slugs = set()
         for round_index in range(1, config["rounds"] + 1):
             if self.paper_strategy_stop_requested.is_set():
@@ -1025,8 +1026,25 @@ class PolyQuickTrader:
             results.append(result)
             self.paper_results.append(result)
             self.root.after(0, self.render_paper_results)
-            self.logger.info("连续模拟第 %s/%s 轮完成: %s", round_index, config["rounds"], result)
+            if result.get("entered") and result.get("status") == "OPEN":
+                monitor_tasks.append(asyncio.create_task(self.monitor_paper_position(config, result)))
+            self.logger.info(
+                "连续模拟第 %s/%s 轮入场判断完成: status=%s direction=%s entry=%s slug=%s",
+                round_index,
+                config["rounds"],
+                result.get("status"),
+                result.get("direction") or "--",
+                "--" if result.get("entry") is None else f"{float(result['entry']):.4f}",
+                result.get("slug"),
+            )
             await self.sleep_with_stop(2)
+
+        if monitor_tasks:
+            self.logger.info("所有入场判断已完成，等待 %s 个模拟持仓监控结束。", len(monitor_tasks))
+            monitor_results = await asyncio.gather(*monitor_tasks, return_exceptions=True)
+            for monitor_result in monitor_results:
+                if isinstance(monitor_result, Exception):
+                    self.logger.warning("模拟持仓监控异常: %s", monitor_result)
 
         summary = self.paper_series_summary(results)
         await self.push_to_server_chan("Polymarket 连续模拟总结", summary)
@@ -1104,13 +1122,38 @@ class PolyQuickTrader:
             "exit_reason": "",
         }
         self.logger.info("模拟买入: %s entry=%.4f size=%.4f notional=%.2f", direction, paper["entry"], paper["size"], paper["notional"])
+        return {
+            "round": round_index,
+            "slug": market.slug,
+            "status": "OPEN",
+            "direction": direction,
+            "entry": paper["entry"],
+            "exit": None,
+            "pnl": 0.0,
+            "pnl_pct": 0.0,
+            "entered": True,
+            "result": f"OPEN | {direction} entry={paper['entry']:.4f} notional={paper['notional']:.2f} USDC",
+            "_market": market,
+            "_decision": decision,
+            "_paper": paper,
+            "_start_ts": start_ts,
+        }
 
+    async def monitor_paper_position(self, config, row):
+        market = row["_market"]
+        decision = row["_decision"]
+        paper = row["_paper"]
+        direction = paper["direction"]
+        start_ts = row.get("_start_ts")
         if start_ts and time.time() < start_ts:
             wait_seconds = min(max(0, start_ts - time.time()), 1200)
-            self.logger.info("模拟等待周期开始: %.0f 秒", wait_seconds)
+            self.logger.info("模拟持仓等待周期开始: %s %.0f 秒", market.slug, wait_seconds)
             await self.sleep_with_stop(wait_seconds)
         if self.paper_strategy_stop_requested.is_set():
-            raise RuntimeError("用户停止模拟")
+            row["status"] = "STOPPED"
+            row["result"] = "STOPPED | 用户停止模拟"
+            self.root.after(0, self.render_paper_results)
+            return row
         paper["start_price"] = await self.fetch_latest_btc_price()
 
         while True:
@@ -1143,18 +1186,15 @@ class PolyQuickTrader:
         paper["pnl_pct"] = pnl / paper["notional"] * 100
         result = f"{paper['exit_reason']} | {direction} entry={paper['entry']:.4f} exit={paper['exit']:.4f} pnl={pnl:+.2f} USDC ({paper['pnl_pct']:+.2f}%)"
         await self.push_paper_strategy_result("已结束", market, decision, paper, result)
-        return {
-            "round": round_index,
-            "slug": market.slug,
+        row.update({
             "status": paper["exit_reason"],
-            "direction": direction,
-            "entry": paper["entry"],
             "exit": paper["exit"],
             "pnl": pnl,
             "pnl_pct": paper["pnl_pct"],
-            "entered": True,
             "result": result,
-        }
+        })
+        self.root.after(0, self.render_paper_results)
+        return row
 
     def render_paper_results(self):
         for item in self.paper_tree.get_children():
