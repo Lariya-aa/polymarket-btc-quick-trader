@@ -75,6 +75,7 @@ class PolyQuickTrader:
         self.latest_quick_markets: list[QuickMarket] = []
         self.latest_positions = []
         self.latest_signal = None
+        self.paper_results = []
         self.paper_strategy_running = False
         self.paper_strategy_stop_requested = threading.Event()
 
@@ -156,39 +157,48 @@ class PolyQuickTrader:
         self.btn_buy_down.pack(side="left", padx=4)
         self.btn_paper_strategy = ttk.Button(quick_ctrl_frame, text="模拟自动策略", width=16, command=self.paper_strategy_button_clicked)
         self.btn_paper_strategy.pack(side="left", padx=4)
-        self.btn_stop_paper_strategy = ttk.Button(quick_ctrl_frame, text="停止模拟", width=12, command=self.stop_paper_strategy_clicked, state="disabled")
-        self.btn_stop_paper_strategy.pack(side="left", padx=4)
 
         paper_frame = ttk.Frame(quick_frame)
         paper_frame.pack(fill="x", pady=(0, 8))
-        ttk.Label(paper_frame, text="模拟入场上限:").pack(side="left", padx=(4, 4))
-        self.ent_paper_max_entry = ttk.Entry(paper_frame, width=7)
+        paper_row1 = ttk.Frame(paper_frame)
+        paper_row1.pack(fill="x", pady=(0, 4))
+        paper_row2 = ttk.Frame(paper_frame)
+        paper_row2.pack(fill="x")
+
+        ttk.Label(paper_row1, text="模拟金额:").pack(side="left", padx=(4, 4))
+        self.ent_paper_usdc = ttk.Entry(paper_row1, width=7)
+        self.ent_paper_usdc.insert(0, "5")
+        self.ent_paper_usdc.pack(side="left", padx=4)
+        ttk.Label(paper_row1, text="模拟入场上限:").pack(side="left", padx=(4, 4))
+        self.ent_paper_max_entry = ttk.Entry(paper_row1, width=7)
         self.ent_paper_max_entry.insert(0, "0.52")
         self.ent_paper_max_entry.pack(side="left", padx=4)
-        ttk.Label(paper_frame, text="模拟止盈:").pack(side="left", padx=(8, 4))
-        self.ent_paper_take_profit = ttk.Entry(paper_frame, width=7)
+        ttk.Label(paper_row1, text="模拟止盈:").pack(side="left", padx=(8, 4))
+        self.ent_paper_take_profit = ttk.Entry(paper_row1, width=7)
         self.ent_paper_take_profit.insert(0, "0.60")
         self.ent_paper_take_profit.pack(side="left", padx=4)
-        ttk.Label(paper_frame, text="最小概率:").pack(side="left", padx=(8, 4))
-        self.ent_paper_min_prob = ttk.Entry(paper_frame, width=7)
+        ttk.Label(paper_row1, text="最小概率:").pack(side="left", padx=(8, 4))
+        self.ent_paper_min_prob = ttk.Entry(paper_row1, width=7)
         self.ent_paper_min_prob.insert(0, "0.60")
         self.ent_paper_min_prob.pack(side="left", padx=4)
-        ttk.Label(paper_frame, text="轮询秒:").pack(side="left", padx=(8, 4))
-        self.ent_paper_poll_seconds = ttk.Entry(paper_frame, width=7)
+        ttk.Label(paper_row1, text="轮询秒:").pack(side="left", padx=(8, 4))
+        self.ent_paper_poll_seconds = ttk.Entry(paper_row1, width=7)
         self.ent_paper_poll_seconds.insert(0, "10")
         self.ent_paper_poll_seconds.pack(side="left", padx=4)
-        ttk.Label(paper_frame, text="开盘前判断秒:").pack(side="left", padx=(8, 4))
-        self.ent_paper_decision_lead_seconds = ttk.Entry(paper_frame, width=7)
+        ttk.Label(paper_row2, text="开盘前判断秒:").pack(side="left", padx=(4, 4))
+        self.ent_paper_decision_lead_seconds = ttk.Entry(paper_row2, width=7)
         self.ent_paper_decision_lead_seconds.insert(0, "120")
         self.ent_paper_decision_lead_seconds.pack(side="left", padx=4)
-        ttk.Label(paper_frame, text="模拟轮数:").pack(side="left", padx=(8, 4))
-        self.ent_paper_rounds = ttk.Entry(paper_frame, width=7)
+        ttk.Label(paper_row2, text="模拟轮数:").pack(side="left", padx=(8, 4))
+        self.ent_paper_rounds = ttk.Entry(paper_row2, width=7)
         self.ent_paper_rounds.insert(0, "4")
         self.ent_paper_rounds.pack(side="left", padx=4)
-        ttk.Label(paper_frame, text="最多小时:").pack(side="left", padx=(8, 4))
-        self.ent_paper_max_hours = ttk.Entry(paper_frame, width=7)
+        ttk.Label(paper_row2, text="最多小时:").pack(side="left", padx=(8, 4))
+        self.ent_paper_max_hours = ttk.Entry(paper_row2, width=7)
         self.ent_paper_max_hours.insert(0, "2")
         self.ent_paper_max_hours.pack(side="left", padx=4)
+        self.btn_stop_paper_strategy = ttk.Button(paper_row2, text="停止模拟", width=12, command=self.stop_paper_strategy_clicked, state="disabled")
+        self.btn_stop_paper_strategy.pack(side="left", padx=(10, 4))
 
         self.lbl_quick_signal = ttk.Label(quick_frame, text="只做辅助判断；每次真实下单前都会确认。", foreground="#475569")
         self.lbl_quick_signal.pack(fill="x", pady=(0, 8))
@@ -213,6 +223,30 @@ class PolyQuickTrader:
             self.quick_tree.heading(col, text=title)
             self.quick_tree.column(col, width=quick_widths[col], anchor="center" if col != "question" else "w")
         self.quick_tree.pack(fill="x", expand=False)
+
+        paper_result_frame = ttk.LabelFrame(quick_frame, text=" 模拟结果 ", padding=6)
+        paper_result_frame.pack(fill="x", pady=(8, 0))
+        self.paper_tree = ttk.Treeview(
+            paper_result_frame,
+            columns=("round", "status", "direction", "entry", "exit", "pnl", "pct", "slug"),
+            show="headings",
+            height=5,
+        )
+        paper_headings = {
+            "round": "轮次",
+            "status": "结果",
+            "direction": "方向",
+            "entry": "买入",
+            "exit": "卖出",
+            "pnl": "盈亏",
+            "pct": "盈亏%",
+            "slug": "市场",
+        }
+        paper_widths = {"round": 55, "status": 110, "direction": 60, "entry": 65, "exit": 65, "pnl": 75, "pct": 75, "slug": 470}
+        for col, title in paper_headings.items():
+            self.paper_tree.heading(col, text=title)
+            self.paper_tree.column(col, width=paper_widths[col], anchor="center" if col != "slug" else "w")
+        self.paper_tree.pack(fill="x", expand=False)
 
         pos_frame = ttk.LabelFrame(self.root, text=" 3. 持仓与卖出 ", padding=10)
         pos_frame.pack(fill="x", padx=15, pady=5)
@@ -312,6 +346,7 @@ class PolyQuickTrader:
             "signature_type": self.cbo_signature_type.get(),
             "quick_usdc": self.ent_quick_usdc.get().strip(),
             "quick_max_price": self.ent_quick_max_price.get().strip(),
+            "paper_usdc": self.ent_paper_usdc.get().strip(),
             "paper_max_entry": self.ent_paper_max_entry.get().strip(),
             "paper_take_profit": self.ent_paper_take_profit.get().strip(),
             "paper_min_prob": self.ent_paper_min_prob.get().strip(),
@@ -344,6 +379,7 @@ class PolyQuickTrader:
                 self.cbo_signature_type.set(str(config.get("signature_type")).strip())
             self._set_entry(self.ent_quick_usdc, config.get("quick_usdc", "5"))
             self._set_entry(self.ent_quick_max_price, config.get("quick_max_price", "0.60"))
+            self._set_entry(self.ent_paper_usdc, config.get("paper_usdc", "5"))
             self._set_entry(self.ent_paper_max_entry, config.get("paper_max_entry", "0.52"))
             self._set_entry(self.ent_paper_take_profit, config.get("paper_take_profit", "0.60"))
             self._set_entry(self.ent_paper_min_prob, config.get("paper_min_prob", "0.60"))
@@ -901,7 +937,7 @@ class PolyQuickTrader:
             return
         try:
             config = {
-                "usdc": float(self.ent_quick_usdc.get().strip()),
+                "usdc": float(self.ent_paper_usdc.get().strip()),
                 "max_entry": float(self.ent_paper_max_entry.get().strip()),
                 "take_profit": float(self.ent_paper_take_profit.get().strip()),
                 "min_prob": float(self.ent_paper_min_prob.get().strip()),
@@ -931,12 +967,15 @@ class PolyQuickTrader:
 
         self.paper_strategy_running = True
         self.paper_strategy_stop_requested.clear()
+        self.paper_results = []
+        self.render_paper_results()
         self.btn_paper_strategy.configure(state="disabled", text="模拟运行中")
         self.btn_stop_paper_strategy.configure(state="normal")
         self.logger.info(
-            "启动连续模拟策略: rounds=%s | max_hours=%.2f | next15m | max_entry=%.2f | take_profit=%.2f | min_prob=%.2f | lead=%.0fs",
+            "启动连续模拟策略: rounds=%s | max_hours=%.2f | next15m | usdc=%.2f | max_entry=%.2f | take_profit=%.2f | min_prob=%.2f | lead=%.0fs",
             config["rounds"],
             config["max_hours"],
+            config["usdc"],
             config["max_entry"],
             config["take_profit"],
             config["min_prob"],
@@ -976,8 +1015,16 @@ class PolyQuickTrader:
             if time.time() >= deadline:
                 self.logger.warning("连续模拟达到最多小时限制，停止。")
                 break
-            result = await self.run_paper_next_15m_strategy(config, round_index, seen_slugs, deadline)
+            try:
+                result = await self.run_paper_next_15m_strategy(config, round_index, seen_slugs, deadline)
+            except RuntimeError as e:
+                if self.paper_strategy_stop_requested.is_set():
+                    self.logger.info("连续模拟已停止: %s", e)
+                    break
+                raise
             results.append(result)
+            self.paper_results.append(result)
+            self.root.after(0, self.render_paper_results)
             self.logger.info("连续模拟第 %s/%s 轮完成: %s", round_index, config["rounds"], result)
             await self.sleep_with_stop(2)
 
@@ -1032,18 +1079,18 @@ class PolyQuickTrader:
         if action == "NO_TRADE" or not direction:
             result = f"NO_TRADE | {decision.get('reason', '')}"
             await self.push_paper_strategy_result("未入场", market, decision, None, result)
-            return {"slug": market.slug, "status": "NO_TRADE", "result": result, "pnl": 0.0, "entered": False}
+            return {"round": round_index, "slug": market.slug, "status": "NO_TRADE", "direction": "", "entry": None, "exit": None, "pnl": 0.0, "pnl_pct": 0.0, "entered": False, "result": result}
         if prob < config["min_prob"]:
             result = f"未入场: 概率 {prob:.2f} 低于阈值 {config['min_prob']:.2f}"
             await self.push_paper_strategy_result("未入场", market, decision, None, result)
-            return {"slug": market.slug, "status": "NO_ENTRY", "result": result, "pnl": 0.0, "entered": False}
+            return {"round": round_index, "slug": market.slug, "status": "NO_ENTRY", "direction": direction, "entry": None, "exit": None, "pnl": 0.0, "pnl_pct": 0.0, "entered": False, "result": result}
 
         market = await self.fetch_market_by_slug(market.slug) or market
         entry = market.up_ask if direction == "UP" else market.down_ask
         if entry > config["max_entry"]:
             result = f"未入场: {direction} ask={entry:.2f} 高于上限 {config['max_entry']:.2f}"
             await self.push_paper_strategy_result("未入场", market, decision, None, result)
-            return {"slug": market.slug, "status": "NO_ENTRY", "result": result, "pnl": 0.0, "entered": False}
+            return {"round": round_index, "slug": market.slug, "status": "NO_ENTRY", "direction": direction, "entry": entry, "exit": None, "pnl": 0.0, "pnl_pct": 0.0, "entered": False, "result": result}
 
         paper = {
             "direction": direction,
@@ -1096,7 +1143,36 @@ class PolyQuickTrader:
         paper["pnl_pct"] = pnl / paper["notional"] * 100
         result = f"{paper['exit_reason']} | {direction} entry={paper['entry']:.4f} exit={paper['exit']:.4f} pnl={pnl:+.2f} USDC ({paper['pnl_pct']:+.2f}%)"
         await self.push_paper_strategy_result("已结束", market, decision, paper, result)
-        return {"slug": market.slug, "status": paper["exit_reason"], "result": result, "pnl": pnl, "entered": True}
+        return {
+            "round": round_index,
+            "slug": market.slug,
+            "status": paper["exit_reason"],
+            "direction": direction,
+            "entry": paper["entry"],
+            "exit": paper["exit"],
+            "pnl": pnl,
+            "pnl_pct": paper["pnl_pct"],
+            "entered": True,
+            "result": result,
+        }
+
+    def render_paper_results(self):
+        for item in self.paper_tree.get_children():
+            self.paper_tree.delete(item)
+        for index, row in enumerate(self.paper_results):
+            entry = row.get("entry")
+            exit_price = row.get("exit")
+            values = (
+                row.get("round", index + 1),
+                row.get("status", ""),
+                row.get("direction", ""),
+                "--" if entry is None else f"{float(entry):.4f}",
+                "--" if exit_price is None else f"{float(exit_price):.4f}",
+                f"{float(row.get('pnl', 0.0)):+.2f}",
+                f"{float(row.get('pnl_pct', 0.0)):+.2f}%",
+                row.get("slug", ""),
+            )
+            self.paper_tree.insert("", "end", iid=str(index), values=values)
 
     async def sleep_with_stop(self, seconds):
         end = time.time() + max(0, seconds)

@@ -3,6 +3,7 @@
     "signature_type": "3",
     "quick_usdc": "5",
     "quick_max_price": "0.60",
+    "paper_usdc": "5",
     "paper_max_entry": "0.52",
     "paper_take_profit": "0.60",
     "paper_min_prob": "0.60",
