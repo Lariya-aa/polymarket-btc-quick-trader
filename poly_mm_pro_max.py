@@ -82,11 +82,16 @@ class PolyQuickTrader:
         self.paper_results = []
         self.paper_strategy_running = False
         self.paper_strategy_stop_requested = threading.Event()
+        self.live_results = []
+        self.live_auto_enabled = False
+        self.live_auto_running = False
+        self.live_auto_stop_requested = threading.Event()
         self.log_context = threading.local()
 
         self.logger = logging.getLogger("PolyQuickTrader")
         self.logger.setLevel(logging.INFO)
         self.logger.handlers.clear()
+        self.logger.filters.clear()
 
         self.setup_ui()
         self.logger.addFilter(self.log_category_filter)
@@ -98,6 +103,10 @@ class PolyQuickTrader:
         auto_handler = TkinterLogHandler(self.auto_log_text, category="auto")
         auto_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", "%H:%M:%S"))
         self.logger.addHandler(auto_handler)
+
+        live_handler = TkinterLogHandler(self.live_log_text, category="live")
+        live_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", "%H:%M:%S"))
+        self.logger.addHandler(live_handler)
 
         file_handler = logging.FileHandler(LOG_FILE, encoding="utf-8")
         file_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
@@ -117,6 +126,14 @@ class PolyQuickTrader:
     def log_auto(self, level, message, *args):
         old_category = getattr(self.log_context, "category", "manual")
         self.log_context.category = "auto"
+        try:
+            self.logger.log(level, message, *args)
+        finally:
+            self.log_context.category = old_category
+
+    def log_live(self, level, message, *args):
+        old_category = getattr(self.log_context, "category", "manual")
+        self.log_context.category = "live"
         try:
             self.logger.log(level, message, *args)
         finally:
@@ -160,13 +177,14 @@ class PolyQuickTrader:
         self.ent_minimax_key = ttk.Entry(api_frame, show="*", width=82)
         self.ent_minimax_key.grid(row=4, column=1, columnspan=3, sticky="w", pady=3, padx=5)
 
-        main_notebook = ttk.Notebook(self.root)
-        main_notebook.pack(fill="both", expand=True, padx=15, pady=5)
+        self.main_notebook = ttk.Notebook(self.root)
+        self.main_notebook.pack(fill="both", expand=True, padx=15, pady=5)
 
-        manual_tab = ttk.Frame(main_notebook)
-        auto_tab = ttk.Frame(main_notebook)
-        main_notebook.add(manual_tab, text="手动交易")
-        main_notebook.add(auto_tab, text="自动模拟")
+        manual_tab = ttk.Frame(self.main_notebook)
+        auto_tab = ttk.Frame(self.main_notebook)
+        self.live_tab = ttk.Frame(self.main_notebook)
+        self.main_notebook.add(manual_tab, text="手动交易")
+        self.main_notebook.add(auto_tab, text="自动模拟")
 
         quick_frame = ttk.LabelFrame(manual_tab, text=" BTC 短周期手动买卖 ", padding=10)
         quick_frame.pack(fill="x", padx=0, pady=5)
@@ -252,8 +270,12 @@ class PolyQuickTrader:
 
         auto_ctrl_frame = ttk.Frame(auto_tab)
         auto_ctrl_frame.pack(fill="x", pady=(0, 8))
+        self.btn_strategy_logic = ttk.Button(auto_ctrl_frame, text="策略逻辑说明", width=16, command=self.show_strategy_logic)
+        self.btn_strategy_logic.pack(side="left", padx=4)
         self.btn_paper_strategy = ttk.Button(auto_ctrl_frame, text="模拟自动策略", width=16, command=self.paper_strategy_button_clicked)
         self.btn_paper_strategy.pack(side="left", padx=4)
+        self.btn_enable_live_auto = ttk.Button(auto_ctrl_frame, text="显示实盘自动交易", width=20, command=self.enable_live_auto_tab)
+        self.btn_enable_live_auto.pack(side="left", padx=4)
 
         paper_result_frame = ttk.LabelFrame(auto_tab, text=" 模拟结果 ", padding=6)
         paper_result_frame.pack(fill="x", pady=(8, 0))
@@ -352,6 +374,118 @@ class PolyQuickTrader:
         )
         self.auto_log_text.pack(fill="both", expand=True)
 
+        self.setup_live_auto_tab()
+
+    def setup_live_auto_tab(self):
+        live_frame = ttk.LabelFrame(self.live_tab, text=" 实盘 AI 自动交易止盈 ", padding=10)
+        live_frame.pack(fill="x", padx=0, pady=5)
+        live_row1 = ttk.Frame(live_frame)
+        live_row1.pack(fill="x", pady=(0, 4))
+        live_row2 = ttk.Frame(live_frame)
+        live_row2.pack(fill="x")
+
+        ttk.Label(live_row1, text="实盘金额:").pack(side="left", padx=(4, 4))
+        self.ent_live_usdc = ttk.Entry(live_row1, width=7)
+        self.ent_live_usdc.insert(0, "5")
+        self.ent_live_usdc.pack(side="left", padx=4)
+        ttk.Label(live_row1, text=f"开单阈值: 单边>{PAPER_SIGNAL_THRESHOLD:.0%}").pack(side="left", padx=(8, 4))
+        ttk.Label(live_row1, text="止盈卖价:").pack(side="left", padx=(8, 4))
+        self.ent_live_take_profit = ttk.Entry(live_row1, width=7)
+        self.ent_live_take_profit.insert(0, "0.60")
+        self.ent_live_take_profit.pack(side="left", padx=4)
+        ttk.Label(live_row1, text="轮询秒:").pack(side="left", padx=(8, 4))
+        self.ent_live_poll_seconds = ttk.Entry(live_row1, width=7)
+        self.ent_live_poll_seconds.insert(0, "3")
+        self.ent_live_poll_seconds.pack(side="left", padx=4)
+
+        ttk.Label(live_row2, text="开盘前判断秒:").pack(side="left", padx=(4, 4))
+        self.ent_live_decision_lead_seconds = ttk.Entry(live_row2, width=7)
+        self.ent_live_decision_lead_seconds.insert(0, "120")
+        self.ent_live_decision_lead_seconds.pack(side="left", padx=4)
+        ttk.Label(live_row2, text="实盘轮数:").pack(side="left", padx=(8, 4))
+        self.ent_live_rounds = ttk.Entry(live_row2, width=7)
+        self.ent_live_rounds.insert(0, "4")
+        self.ent_live_rounds.pack(side="left", padx=4)
+        ttk.Label(live_row2, text="最多小时:").pack(side="left", padx=(8, 4))
+        self.ent_live_max_hours = ttk.Entry(live_row2, width=7)
+        self.ent_live_max_hours.insert(0, "2")
+        self.ent_live_max_hours.pack(side="left", padx=4)
+        self.btn_start_live_auto = ttk.Button(live_row2, text="启动实盘自动", width=16, command=self.live_auto_button_clicked)
+        self.btn_start_live_auto.pack(side="left", padx=(10, 4))
+        self.btn_stop_live_auto = ttk.Button(live_row2, text="停止实盘自动", width=16, command=self.stop_live_auto_clicked, state="disabled")
+        self.btn_stop_live_auto.pack(side="left", padx=4)
+
+        live_result_frame = ttk.LabelFrame(self.live_tab, text=" 实盘自动结果 ", padding=6)
+        live_result_frame.pack(fill="x", pady=(8, 0))
+        self.live_tree = ttk.Treeview(
+            live_result_frame,
+            columns=("round", "status", "direction", "entry", "current", "high", "exit", "pnl", "pct", "slug"),
+            show="headings",
+            height=5,
+        )
+        headings = {
+            "round": "轮次",
+            "status": "状态",
+            "direction": "方向",
+            "entry": "买入",
+            "current": "当前可卖",
+            "high": "最高可卖",
+            "exit": "卖出",
+            "pnl": "盈亏",
+            "pct": "盈亏%",
+            "slug": "市场",
+        }
+        widths = {"round": 55, "status": 105, "direction": 55, "entry": 60, "current": 70, "high": 70, "exit": 60, "pnl": 70, "pct": 70, "slug": 390}
+        for col, title in headings.items():
+            self.live_tree.heading(col, text=title)
+            self.live_tree.column(col, width=widths[col], anchor="center" if col != "slug" else "w")
+        self.live_tree.pack(fill="x", expand=False)
+
+        live_log_frame = ttk.LabelFrame(self.live_tab, text=" 实盘自动日志 ", padding=10)
+        live_log_frame.pack(fill="both", expand=True, padx=0, pady=5)
+        self.live_log_text = scrolledtext.ScrolledText(
+            live_log_frame,
+            state="disabled",
+            height=16,
+            bg="#0f172a",
+            fg="#e5e7eb",
+            font=("Consolas", 10),
+        )
+        self.live_log_text.pack(fill="both", expand=True)
+
+    def show_strategy_logic(self):
+        messagebox.showinfo(
+            "模拟/实盘自动策略逻辑",
+            "当前自动策略逻辑：\n\n"
+            "1. 每轮只选择下一轮 BTC 15m Up/Down 市场。\n"
+            "2. 默认在开盘前 120 秒进行一次 AI/本地概率判断。\n"
+            "3. 只看 Up/Down 单边概率，哪边更高就选择哪边。\n"
+            "4. 只有单边概率严格超过 65% 才开单。\n"
+            "5. 买入价和卖出监控价都读取对应 token 的 CLOB 订单簿。\n"
+            "6. 入场后按轮询秒数监控 best bid，达到止盈价就卖出。\n"
+            "7. 模拟不会真实下单；实盘自动会真实提交买单和卖单。",
+        )
+
+    def enable_live_auto_tab(self):
+        if self.live_auto_enabled:
+            self.main_notebook.select(self.live_tab)
+            return
+        if not messagebox.askyesno(
+            "显示实盘自动交易",
+            "实盘自动交易会真实提交 Polymarket 买入和卖出订单。\n\n"
+            "确认后才会显示实盘自动分页。是否继续？",
+        ):
+            return
+        if not messagebox.askyesno(
+            "二次确认",
+            "请再次确认：你理解实盘自动交易可能造成真实亏损，并愿意自行承担风险。\n\n显示实盘自动交易分页？",
+        ):
+            return
+        self.live_auto_enabled = True
+        self.main_notebook.add(self.live_tab, text="实盘自动")
+        self.main_notebook.select(self.live_tab)
+        self.log_live(logging.WARNING, "实盘自动交易分页已显示；启动前请再次确认参数。")
+
     def load_credentials_from_env(self):
         env_map = {
             self.ent_priv_key: "POLY_PRIVATE_KEY",
@@ -408,6 +542,12 @@ class PolyQuickTrader:
             "paper_decision_lead_seconds": self.ent_paper_decision_lead_seconds.get().strip(),
             "paper_rounds": self.ent_paper_rounds.get().strip(),
             "paper_max_hours": self.ent_paper_max_hours.get().strip(),
+            "live_usdc": self.ent_live_usdc.get().strip(),
+            "live_take_profit": self.ent_live_take_profit.get().strip(),
+            "live_poll_seconds": self.ent_live_poll_seconds.get().strip(),
+            "live_decision_lead_seconds": self.ent_live_decision_lead_seconds.get().strip(),
+            "live_rounds": self.ent_live_rounds.get().strip(),
+            "live_max_hours": self.ent_live_max_hours.get().strip(),
         }
 
     def save_config_to_local(self):
@@ -439,6 +579,12 @@ class PolyQuickTrader:
             self._set_entry(self.ent_paper_decision_lead_seconds, config.get("paper_decision_lead_seconds", "120"))
             self._set_entry(self.ent_paper_rounds, config.get("paper_rounds", "40"))
             self._set_entry(self.ent_paper_max_hours, config.get("paper_max_hours", "12"))
+            self._set_entry(self.ent_live_usdc, config.get("live_usdc", "5"))
+            self._set_entry(self.ent_live_take_profit, config.get("live_take_profit", "0.60"))
+            self._set_entry(self.ent_live_poll_seconds, config.get("live_poll_seconds", "3"))
+            self._set_entry(self.ent_live_decision_lead_seconds, config.get("live_decision_lead_seconds", "120"))
+            self._set_entry(self.ent_live_rounds, config.get("live_rounds", "4"))
+            self._set_entry(self.ent_live_max_hours, config.get("live_max_hours", "2"))
         except Exception as e:
             logging.error("加载配置文件失败: %s", e)
 
@@ -1063,6 +1209,89 @@ class PolyQuickTrader:
             self.btn_stop_paper_strategy.configure(state="disabled")
             self.log_auto(logging.WARNING, "已请求停止连续模拟；当前等待/轮询会尽快退出。")
 
+    def live_auto_button_clicked(self):
+        if self.live_auto_running:
+            messagebox.showinfo("实盘自动", "实盘自动交易正在运行中。")
+            return
+        try:
+            config = {
+                "usdc": float(self.ent_live_usdc.get().strip()),
+                "take_profit": float(self.ent_live_take_profit.get().strip()),
+                "signal_threshold": PAPER_SIGNAL_THRESHOLD,
+                "poll_seconds": float(self.ent_live_poll_seconds.get().strip()),
+                "decision_lead_seconds": float(self.ent_live_decision_lead_seconds.get().strip()),
+                "rounds": int(float(self.ent_live_rounds.get().strip())),
+                "max_hours": float(self.ent_live_max_hours.get().strip()),
+            }
+        except ValueError:
+            messagebox.showerror("参数错误", "实盘自动参数必须是数字。")
+            return
+        if config["usdc"] <= 0 or not (0 < config["take_profit"] < 1):
+            messagebox.showerror("参数错误", "请确认：金额>0，止盈价在 0 到 1 之间。")
+            return
+        if config["poll_seconds"] < 1:
+            messagebox.showerror("参数错误", "轮询秒数不要低于 1 秒。")
+            return
+        if config["decision_lead_seconds"] < 0 or config["decision_lead_seconds"] > 600:
+            messagebox.showerror("参数错误", "开盘前判断秒建议在 0 到 600 秒之间。")
+            return
+        if config["rounds"] <= 0 or config["rounds"] > 100:
+            messagebox.showerror("参数错误", "实盘轮数必须在 1 到 100 之间。")
+            return
+        if config["max_hours"] <= 0 or config["max_hours"] > 48:
+            messagebox.showerror("参数错误", "实盘最多小时必须在 0 到 48 之间。")
+            return
+        if not messagebox.askyesno(
+            "确认启动实盘自动",
+            f"即将启动真实自动交易：\n\n"
+            f"每轮金额: {config['usdc']:.2f} USDC\n"
+            f"止盈卖价: {config['take_profit']:.4f}\n"
+            f"轮数: {config['rounds']}\n"
+            f"最多小时: {config['max_hours']:.2f}\n\n"
+            "程序会真实提交买入和卖出订单，可能造成亏损。确认启动？",
+        ):
+            return
+
+        self.live_auto_running = True
+        self.live_auto_stop_requested.clear()
+        self.live_results = []
+        self.render_live_results()
+        self.btn_start_live_auto.configure(state="disabled", text="实盘运行中")
+        self.btn_stop_live_auto.configure(state="normal")
+        self.log_live(
+            logging.WARNING,
+            "启动实盘自动交易: rounds=%s | max_hours=%.2f | usdc=%.2f | take_profit=%.2f | threshold=%.0f%% | lead=%.0fs",
+            config["rounds"],
+            config["max_hours"],
+            config["usdc"],
+            config["take_profit"],
+            config["signal_threshold"] * 100,
+            config["decision_lead_seconds"],
+        )
+
+        def worker():
+            self.set_log_category("live")
+            loop = asyncio.new_event_loop()
+            try:
+                result = loop.run_until_complete(self.run_live_auto_series(config))
+                self.root.after(0, lambda result=result: self.log_live(logging.WARNING, "实盘自动结束: %s", result))
+            except Exception as e:
+                error_text = str(e) or repr(e)
+                self.root.after(0, lambda err=error_text: self.log_live(logging.ERROR, "实盘自动失败: %s", err))
+            finally:
+                loop.close()
+                self.live_auto_running = False
+                self.root.after(0, lambda: self.btn_start_live_auto.configure(state="normal", text="启动实盘自动"))
+                self.root.after(0, lambda: self.btn_stop_live_auto.configure(state="disabled"))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def stop_live_auto_clicked(self):
+        if self.live_auto_running:
+            self.live_auto_stop_requested.set()
+            self.btn_stop_live_auto.configure(state="disabled")
+            self.log_live(logging.WARNING, "已请求停止实盘自动；不会新增下一轮，已有监控会尽快退出。")
+
     async def run_paper_strategy_series(self, config):
         started_at = time.time()
         deadline = started_at + config["max_hours"] * 3600
@@ -1108,6 +1337,147 @@ class PolyQuickTrader:
         summary = self.paper_series_summary(results)
         await self.push_to_server_chan("Polymarket 连续模拟总结", summary)
         return summary.replace("\n", " | ")
+
+    async def run_live_auto_series(self, config):
+        started_at = time.time()
+        deadline = started_at + config["max_hours"] * 3600
+        results = []
+        monitor_tasks = []
+        seen_slugs = set()
+        for round_index in range(1, config["rounds"] + 1):
+            if self.live_auto_stop_requested.is_set():
+                break
+            if time.time() >= deadline:
+                self.logger.warning("实盘自动达到最多小时限制，停止新增轮次。")
+                break
+            try:
+                result = await self.run_live_next_15m_trade(config, round_index, seen_slugs, deadline)
+            except RuntimeError as e:
+                if self.live_auto_stop_requested.is_set():
+                    self.logger.info("实盘自动已停止: %s", e)
+                    break
+                raise
+            results.append(result)
+            self.live_results.append(result)
+            self.root.after(0, self.render_live_results)
+            if result.get("entered") and result.get("status") == "OPEN":
+                monitor_tasks.append(asyncio.create_task(self.monitor_live_position(config, result)))
+            self.logger.warning(
+                "实盘第 %s/%s 轮完成入场判断: status=%s direction=%s entry=%s slug=%s",
+                round_index,
+                config["rounds"],
+                result.get("status"),
+                result.get("direction") or "--",
+                "--" if result.get("entry") is None else f"{float(result['entry']):.4f}",
+                result.get("slug"),
+            )
+            await self.sleep_with_stop(2, self.live_auto_stop_requested)
+
+        if monitor_tasks:
+            self.logger.warning("等待 %s 个实盘持仓监控结束。", len(monitor_tasks))
+            monitor_results = await asyncio.gather(*monitor_tasks, return_exceptions=True)
+            for monitor_result in monitor_results:
+                if isinstance(monitor_result, Exception):
+                    self.logger.warning("实盘持仓监控异常: %s", monitor_result)
+
+        summary = self.live_series_summary(results)
+        await self.push_to_server_chan("Polymarket 实盘自动总结", summary)
+        return summary.replace("\n", " | ")
+
+    async def run_live_next_15m_trade(self, config, round_index=1, seen_slugs=None, deadline=None):
+        market = await self.fetch_next_15m_market()
+        if not market:
+            raise RuntimeError("没有找到下一轮 15m 市场")
+        while seen_slugs is not None and market.slug in seen_slugs:
+            self.logger.info("实盘已跑过 %s，等待下一轮 15m 市场。", market.slug)
+            await self.sleep_with_stop(5, self.live_auto_stop_requested)
+            market = await self.fetch_next_15m_market()
+            if not market:
+                raise RuntimeError("没有找到下一轮 15m 市场")
+        if seen_slugs is not None:
+            seen_slugs.add(market.slug)
+
+        self.logger.warning("实盘第 %s 轮目标市场: %s | %s | end=%s", round_index, market.slug, market.question, market.end_dt)
+        start_ts = self.market_start_timestamp(market)
+        if start_ts:
+            decision_ts = start_ts - config["decision_lead_seconds"]
+            wait_seconds = decision_ts - time.time()
+            if wait_seconds > 0:
+                if deadline and time.time() + wait_seconds > deadline:
+                    raise RuntimeError("达到最多小时限制，未进入下一轮判断窗口")
+                decision_time = datetime.fromtimestamp(decision_ts).astimezone().strftime("%H:%M:%S")
+                self.logger.info("实盘等待到开盘前 %.0f 秒再判断: 约 %s，等待 %.0f 秒", config["decision_lead_seconds"], decision_time, wait_seconds)
+                await self.sleep_with_stop(wait_seconds, self.live_auto_stop_requested)
+            else:
+                self.logger.info("实盘当前已进入开盘前 %.0f 秒窗口，立即判断。", config["decision_lead_seconds"])
+            market = await self.fetch_market_by_slug(market.slug) or market
+        if self.live_auto_stop_requested.is_set():
+            raise RuntimeError("用户停止实盘自动")
+
+        signal = await self.fetch_btc_signal(market)
+        minimax_key = self.ent_minimax_key.get().strip()
+        decision = await self.fetch_minimax_prediction(signal, minimax_key, market) if minimax_key else self.local_structured_decision(signal, market, "未配置 MiniMax")
+        prob_up = self.normalize_probability(decision.get("prob_up"), signal.get("prob_up", 0.5))
+        prob_down = self.normalize_probability(decision.get("prob_down"), 1.0 - prob_up)
+        if prob_up >= prob_down:
+            direction = "UP"
+            action = "BUY_UP"
+            prob = prob_up
+        else:
+            direction = "DOWN"
+            action = "BUY_DOWN"
+            prob = prob_down
+
+        self.logger.warning(
+            "实盘入场判断: action=%s prob=%.1f%% threshold=%.1f%% source=%s reason=%s",
+            action,
+            prob * 100,
+            config["signal_threshold"] * 100,
+            decision.get("source", "MINIMAX"),
+            decision.get("reason", ""),
+        )
+        if prob <= config["signal_threshold"]:
+            result = f"未入场: 单边最高概率 {prob:.2f} 未超过固定阈值 {config['signal_threshold']:.2f}"
+            return {"round": round_index, "slug": market.slug, "status": "NO_TRADE", "direction": "", "entry": None, "exit": None, "pnl": 0.0, "pnl_pct": 0.0, "entered": False, "result": result}
+
+        market = await self.fetch_market_by_slug(market.slug) or market
+        token_id = market.yes_id if direction == "UP" else market.no_id
+        buy_details = await self.buy_quick_market(market, direction, config["usdc"], 0.99)
+        entry = float(buy_details["price"])
+        size = float(buy_details["size"])
+        row = {
+            "round": round_index,
+            "slug": market.slug,
+            "status": "OPEN",
+            "direction": direction,
+            "entry": entry,
+            "current": entry,
+            "high": entry,
+            "exit": None,
+            "pnl": 0.0,
+            "pnl_pct": 0.0,
+            "entered": True,
+            "result": f"OPEN_REAL | {direction} entry={entry:.4f} size={size:.4f}",
+            "_market": market,
+            "_decision": decision,
+            "_live": {
+                "direction": direction,
+                "token_id": token_id,
+                "entry": entry,
+                "size": size,
+                "notional": config["usdc"],
+                "take_profit": config["take_profit"],
+                "tick_size": buy_details.get("tick_size") or market.tick_size,
+                "exit": None,
+                "exit_reason": "",
+            },
+            "_start_ts": start_ts,
+        }
+        await self.push_to_server_chan(
+            "Polymarket 实盘自动买入",
+            f"### Polymarket 实盘自动买入\n\n- 市场: `{market.slug}`\n- 方向: `{direction}`\n- 入场: `{entry:.4f}`\n- 数量: `{size:.4f}`\n- 金额: `{config['usdc']:.2f}` USDC\n- 概率: Up `{prob_up * 100:.1f}%` / Down `{prob_down * 100:.1f}%`",
+        )
+        return row
 
     async def run_paper_next_15m_strategy(self, config, round_index=1, seen_slugs=None, deadline=None):
         market = await self.fetch_next_15m_market()
@@ -1290,6 +1660,78 @@ class PolyQuickTrader:
         self.root.after(0, self.render_paper_results)
         return row
 
+    async def monitor_live_position(self, config, row):
+        market = row["_market"]
+        live = row["_live"]
+        direction = live["direction"]
+        token_id = live["token_id"]
+        start_ts = row.get("_start_ts")
+        if start_ts and time.time() < start_ts:
+            wait_seconds = min(max(0, start_ts - time.time()), 1200)
+            self.logger.info("实盘持仓等待周期开始: %s %.0f 秒", market.slug, wait_seconds)
+            await self.sleep_with_stop(wait_seconds, self.live_auto_stop_requested)
+        if self.live_auto_stop_requested.is_set():
+            row["status"] = "STOPPED"
+            row["result"] = "STOPPED | 用户停止实盘自动"
+            self.root.after(0, self.render_live_results)
+            return row
+
+        while True:
+            latest = await self.fetch_market_by_slug(market.slug)
+            if latest:
+                market = latest
+            book = await self.best_bid_ask_for_token(token_id)
+            sell_bid = book["bid"] if book["bid"] is not None else (market.up_bid if direction == "UP" else market.down_bid)
+            live["current"] = sell_bid
+            live["high"] = max(float(live.get("high") or live["entry"]), sell_bid)
+            row.update({
+                "current": live["current"],
+                "high": live["high"],
+            })
+            self.root.after(0, self.render_live_results)
+            self.logger.info(
+                "实盘监控: %s token=%s sell_bid=%.4f high_bid=%.4f target=%.4f",
+                direction,
+                token_id[:12],
+                sell_bid,
+                live["high"],
+                live["take_profit"],
+            )
+            if sell_bid >= live["take_profit"]:
+                sell_price = self.clamp_price(sell_bid, live.get("tick_size") or market.tick_size)
+                resp = await self.sell_token_limit(token_id, live["size"], sell_price, live.get("tick_size") or market.tick_size)
+                live["exit"] = sell_price
+                live["exit_reason"] = "TAKE_PROFIT_SELL_SUBMITTED"
+                live["sell_response"] = resp
+                break
+            if market.end_dt and datetime.now(timezone.utc) >= market.end_dt:
+                live["exit"] = sell_bid
+                live["exit_reason"] = "MARKET_ENDED_NO_SELL"
+                break
+            if self.live_auto_stop_requested.is_set():
+                live["exit"] = sell_bid
+                live["exit_reason"] = "STOPPED"
+                break
+            await self.sleep_with_stop(config["poll_seconds"], self.live_auto_stop_requested)
+
+        pnl = ((live["exit"] or 0.0) - live["entry"]) * live["size"]
+        live["pnl"] = pnl
+        live["pnl_pct"] = pnl / live["notional"] * 100 if live["notional"] else 0.0
+        result = f"{live['exit_reason']} | {direction} entry={live['entry']:.4f} exit={live['exit']:.4f} pnl={pnl:+.2f} USDC ({live['pnl_pct']:+.2f}%)"
+        row.update({
+            "status": live["exit_reason"],
+            "exit": live["exit"],
+            "pnl": pnl,
+            "pnl_pct": live["pnl_pct"],
+            "result": result,
+        })
+        self.root.after(0, self.render_live_results)
+        await self.push_to_server_chan(
+            "Polymarket 实盘自动结果",
+            f"### Polymarket 实盘自动结果\n\n- 市场: `{market.slug}`\n- 方向: `{direction}`\n- 结果: `{result}`",
+        )
+        return row
+
     def render_paper_results(self):
         for item in self.paper_tree.get_children():
             self.paper_tree.delete(item)
@@ -1312,10 +1754,33 @@ class PolyQuickTrader:
             )
             self.paper_tree.insert("", "end", iid=str(index), values=values)
 
-    async def sleep_with_stop(self, seconds):
+    def render_live_results(self):
+        for item in self.live_tree.get_children():
+            self.live_tree.delete(item)
+        for index, row in enumerate(self.live_results):
+            entry = row.get("entry")
+            current = row.get("current")
+            high = row.get("high")
+            exit_price = row.get("exit")
+            values = (
+                row.get("round", index + 1),
+                row.get("status", ""),
+                row.get("direction", ""),
+                "--" if entry is None else f"{float(entry):.4f}",
+                "--" if current is None else f"{float(current):.4f}",
+                "--" if high is None else f"{float(high):.4f}",
+                "--" if exit_price is None else f"{float(exit_price):.4f}",
+                f"{float(row.get('pnl', 0.0)):+.2f}",
+                f"{float(row.get('pnl_pct', 0.0)):+.2f}%",
+                row.get("slug", ""),
+            )
+            self.live_tree.insert("", "end", iid=str(index), values=values)
+
+    async def sleep_with_stop(self, seconds, stop_event=None):
+        stop_event = stop_event or self.paper_strategy_stop_requested
         end = time.time() + max(0, seconds)
         while time.time() < end:
-            if self.paper_strategy_stop_requested.is_set():
+            if stop_event.is_set():
                 return
             await asyncio.sleep(min(1.0, end - time.time()))
 
@@ -1336,6 +1801,25 @@ class PolyQuickTrader:
         if entered:
             lines.append("")
             lines.append("最近入场结果:")
+            for r in entered[-6:]:
+                lines.append(f"- `{r.get('status')}` | `{r.get('slug')}` | `{r.get('pnl', 0):+.2f}` USDC")
+        return "\n".join(lines)
+
+    def live_series_summary(self, results):
+        entered = [r for r in results if r.get("entered")]
+        pnl = sum(float(r.get("pnl", 0.0)) for r in entered)
+        sells = sum(1 for r in entered if str(r.get("status", "")).startswith("TAKE_PROFIT"))
+        lines = [
+            "### Polymarket 实盘自动总结",
+            "",
+            f"- 总轮数: `{len(results)}`",
+            f"- 入场轮数: `{len(entered)}`",
+            f"- 止盈卖单提交次数: `{sells}`",
+            f"- 按提交价估算盈亏: `{pnl:+.2f}` USDC",
+        ]
+        if entered:
+            lines.append("")
+            lines.append("最近实盘结果:")
             for r in entered[-6:]:
                 lines.append(f"- `{r.get('status')}` | `{r.get('slug')}` | `{r.get('pnl', 0):+.2f}` USDC")
         return "\n".join(lines)
@@ -1481,7 +1965,7 @@ class PolyQuickTrader:
         if isinstance(resp, dict) and resp.get("success") is False:
             raise RuntimeError(f"交易所拒绝订单: {resp}")
         await self.push_trade_result("快速买入", market.question, direction, size, price, resp, market_slug=market.slug)
-        return resp
+        return {"response": resp, "token_id": token_id, "price": price, "size": size, "tick_size": tick_size or market.tick_size}
 
     async def best_ask_for_token(self, client, token_id: str):
         orderbook = await asyncio.wait_for(asyncio.to_thread(client.get_order_book, token_id), timeout=15)
@@ -1511,6 +1995,28 @@ class PolyQuickTrader:
         except Exception as e:
             self.logger.warning("读取 CLOB 订单簿失败 token=%s: %s", token_id[:12], e)
             return {"bid": None, "ask": None, "tick_size": "0.01"}
+
+    async def sell_token_limit(self, token_id: str, size: float, price: float, tick_size: str):
+        config = self.validate_credentials_config()
+        creds = ApiCreds(config["api_key"], config["secret"], config["passphrase"]) if config["api_key"] else await self.derive_api_creds()
+        if creds is None:
+            raise RuntimeError("无法派生 CLOB API 凭证")
+        client = self.build_client(config, creds)
+        price = self.clamp_price(price, tick_size)
+        self.logger.warning("提交实盘自动卖出订单: token=%s price=%.4f size=%.4f tick=%s", token_id[:12], price, size, tick_size)
+        resp = await asyncio.wait_for(
+            asyncio.to_thread(
+                client.create_and_post_order,
+                order_args=OrderArgs(token_id=token_id, price=float(price), size=float(size), side=Side.SELL),
+                options=PartialCreateOrderOptions(tick_size=tick_size),
+                order_type=OrderType.GTC,
+                post_only=False,
+            ),
+            timeout=25,
+        )
+        if isinstance(resp, dict) and resp.get("success") is False:
+            raise RuntimeError(f"交易所拒绝卖出订单: {resp}")
+        return resp
 
     async def fetch_positions(self):
         user = self.ent_funder.get().strip()

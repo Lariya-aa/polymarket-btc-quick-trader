@@ -12,6 +12,7 @@ Tkinter desktop tool for Polymarket BTC Up/Down short-cycle markets.
 - Position refresh and limit-sell flow.
 - ServerChan notification for submitted trades, including current position PnL snapshot.
 - Separate tabs for manual trading and automated paper strategy, each with its own log output.
+- Live automated trading tab is hidden by default and only appears after two confirmations; starting live automation requires another confirmation.
 
 ## Setup
 

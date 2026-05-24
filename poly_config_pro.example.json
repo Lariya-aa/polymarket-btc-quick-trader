@@ -8,5 +8,11 @@
     "paper_poll_seconds": "3",
     "paper_decision_lead_seconds": "120",
     "paper_rounds": "40",
-    "paper_max_hours": "12"
+    "paper_max_hours": "12",
+    "live_usdc": "5",
+    "live_take_profit": "0.60",
+    "live_poll_seconds": "3",
+    "live_decision_lead_seconds": "120",
+    "live_rounds": "4",
+    "live_max_hours": "2"
 }
