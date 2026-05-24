@@ -1109,9 +1109,12 @@ class PolyQuickTrader:
             return {"round": round_index, "slug": market.slug, "status": "NO_TRADE", "direction": "", "entry": None, "exit": None, "pnl": 0.0, "pnl_pct": 0.0, "entered": False, "result": result}
 
         market = await self.fetch_market_by_slug(market.slug) or market
-        entry = market.up_ask if direction == "UP" else market.down_ask
+        token_id = market.yes_id if direction == "UP" else market.no_id
+        entry_book = await self.best_bid_ask_for_token(token_id)
+        entry = entry_book["ask"] if entry_book["ask"] is not None else (market.up_ask if direction == "UP" else market.down_ask)
         paper = {
             "direction": direction,
+            "token_id": token_id,
             "entry": entry,
             "size": config["usdc"] / entry,
             "notional": config["usdc"],
@@ -1155,6 +1158,7 @@ class PolyQuickTrader:
         decision = row["_decision"]
         paper = row["_paper"]
         direction = paper["direction"]
+        token_id = paper["token_id"]
         start_ts = row.get("_start_ts")
         if start_ts and time.time() < start_ts:
             wait_seconds = min(max(0, start_ts - time.time()), 1200)
@@ -1172,7 +1176,8 @@ class PolyQuickTrader:
             latest = await self.fetch_market_by_slug(market.slug)
             if latest:
                 market = latest
-            sell_bid = market.up_bid if direction == "UP" else market.down_bid
+            book = await self.best_bid_ask_for_token(token_id)
+            sell_bid = book["bid"] if book["bid"] is not None else (market.up_bid if direction == "UP" else market.down_bid)
             paper["current"] = sell_bid
             paper["high"] = max(float(paper.get("high") or paper["entry"]), sell_bid)
             row.update({
@@ -1181,11 +1186,14 @@ class PolyQuickTrader:
             })
             self.root.after(0, self.render_paper_results)
             self.logger.info(
-                "模拟监控: %s sell_bid=%.4f high_bid=%.4f target=%.4f | up %.4f/%.4f down %.4f/%.4f",
+                "模拟监控: %s token=%s sell_bid=%.4f high_bid=%.4f target=%.4f | book_bid=%s book_ask=%s | gamma up %.4f/%.4f down %.4f/%.4f",
                 direction,
+                token_id[:12],
                 sell_bid,
                 paper["high"],
                 paper["take_profit"],
+                "--" if book["bid"] is None else f"{book['bid']:.4f}",
+                "--" if book["ask"] is None else f"{book['ask']:.4f}",
                 market.up_bid,
                 market.up_ask,
                 market.down_bid,
@@ -1427,6 +1435,24 @@ class PolyQuickTrader:
         best_ask = min(asks)
         self.logger.info("订单簿 best_ask=%.4f tick=%s", best_ask, tick_size)
         return best_ask, tick_size
+
+    async def best_bid_ask_for_token(self, token_id: str):
+        try:
+            client = ClobClient(host=CLOB_HOST, chain_id=CHAIN_ID, retry_on_error=True)
+            orderbook = await asyncio.wait_for(asyncio.to_thread(client.get_order_book, token_id), timeout=8)
+            raw_bids = orderbook.get("bids", []) if isinstance(orderbook, dict) else getattr(orderbook, "bids", None) or []
+            raw_asks = orderbook.get("asks", []) if isinstance(orderbook, dict) else getattr(orderbook, "asks", None) or []
+            tick_size = str((orderbook.get("tick_size") if isinstance(orderbook, dict) else getattr(orderbook, "tick_size", None)) or "0.01")
+            bids = [float(self._book_level_value(level, "price")) for level in raw_bids if self._book_level_value(level, "price") is not None]
+            asks = [float(self._book_level_value(level, "price")) for level in raw_asks if self._book_level_value(level, "price") is not None]
+            return {
+                "bid": max(bids) if bids else None,
+                "ask": min(asks) if asks else None,
+                "tick_size": tick_size,
+            }
+        except Exception as e:
+            self.logger.warning("读取 CLOB 订单簿失败 token=%s: %s", token_id[:12], e)
+            return {"bid": None, "ask": None, "tick_size": "0.01"}
 
     async def fetch_positions(self):
         user = self.ent_funder.get().strip()
