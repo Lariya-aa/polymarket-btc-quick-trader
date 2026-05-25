@@ -19,3 +19,4 @@ PolyMarketMaker.app/
 .venv/
 venv/
 env/
+.ai-cycle/
