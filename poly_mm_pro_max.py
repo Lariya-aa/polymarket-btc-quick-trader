@@ -1656,32 +1656,38 @@ class PolyQuickTrader:
                 if wait_until_close > 0:
                     self.log_live(logging.INFO, "等待第 %s 单结算，约 %.0f 秒", layer, wait_until_close)
                     await self.sleep_with_stop(wait_until_close)
-                latest_rows = await self.fetch_btc_15m_klines(2)
-                trade_rows = [row_data for row_data in latest_rows if int(row_data[0]) == int(trade_open)]
-                if trade_rows:
-                    win = self.kline_color(trade_rows[0]) == profile["win_color"]
-                else:
-                    latest_market = await self.fetch_market_by_slug(market.slug) or market
-                    win = bool(latest_market.ended and getattr(latest_market, profile["settlement_bid_attr"]) > 0.9)
-                if win:
+                # market end_dt + 5min grace as upper bound for settlement detection;
+                # fall back to 30 min from now if end_dt missing.
+                settle_deadline = (market.end_dt.timestamp() + 300) if market.end_dt else (time.time() + 1800)
+                token_id_settled = getattr(market, profile["token_attr"])
+                outcome = await self._settle_from_positions(token_id_settled, settle_deadline, self.live_auto_stop_requested)
+                if outcome == "win":
                     pnl = (1.0 - entry) * size - accumulated_loss
                     row.update({"status": "REVERSAL_REAL_WIN", "current": 1.0, "high": 1.0, "exit": 1.0, "pnl": pnl, "pnl_pct": pnl / stake * 100 if stake else 0.0})
                     self.root.after(0, self.render_live_results)
-                    self.log_live(logging.WARNING, "%s 实盘第 %s 单胜: pnl≈%+.2fU", profile["label"], layer, pnl)
+                    self.log_live(logging.WARNING, "%s 实盘第 %s 单胜 (data-api redeemable=True): pnl≈%+.2fU", profile["label"], layer, pnl)
                     await self.push_to_server_chan(
                         "Polymarket 反转实盘结果",
-                        f"### Polymarket 反转实盘结果\n\n- 策略: `{profile['label']}`\n- 周期: `{cycle_count}`\n- 层数: `{layer}`\n- 方向: `{profile['direction']}`\n- 市场: `{market.slug}`\n- 结果: `WIN`\n- 入场: `{entry:.4f}`\n- 结算: `1.0000`\n- 本行盈亏估算: `{pnl:+.2f}` USDC",
+                        f"### Polymarket 反转实盘结果\n\n- 策略: `{profile['label']}`\n- 周期: `{cycle_count}`\n- 层数: `{layer}`\n- 方向: `{profile['direction']}`\n- 市场: `{market.slug}`\n- 结果: `WIN`\n- 入场: `{entry:.4f} (verified={fill_verified})`\n- 结算: `data-api redeemable`\n- 本行盈亏估算: `{pnl:+.2f}` USDC",
                     )
                     break
+                if outcome == "pending_timeout":
+                    self.log_live(logging.ERROR, "%s 实盘第 %s 单结算异常 (deadline 超出，需人工介入)", profile["label"], layer)
+                    await self.push_to_server_chan(
+                        "Polymarket 反转实盘 ⚠️ 结算异常",
+                        f"### ⚠️ 反转实盘结算异常\n\n- 策略: `{profile['label']}`\n- 周期: `{cycle_count}`\n- 层数: `{layer}`\n- 市场: `{market.slug}`\n- token: `{token_id_settled[:12]}...`\n- 入场: `{entry:.4f}`\n- 仓位结算状态超 deadline 未确定，请去 polymarket.com/portfolio 人工核对",
+                    )
+                    return f"已停止 (结算异常)，触发周期={cycle_count}"
+                # outcome == "loss"
                 loss = entry * size
                 accumulated_loss += loss
                 pnl = -loss
                 row.update({"status": "REVERSAL_REAL_LOSS" if layer == len(stakes) else "REVERSAL_REAL_NEXT", "current": 0.0, "high": row.get("high", entry), "exit": 0.0, "pnl": pnl, "pnl_pct": pnl / stake * 100 if stake else 0.0})
                 self.root.after(0, self.render_live_results)
-                self.log_live(logging.WARNING, "%s 实盘第 %s 单负: loss≈%.2fU", profile["label"], layer, loss)
+                self.log_live(logging.WARNING, "%s 实盘第 %s 单负 (data-api 仓位归零): loss≈%.2fU", profile["label"], layer, loss)
                 await self.push_to_server_chan(
                     "Polymarket 反转实盘结果",
-                    f"### Polymarket 反转实盘结果\n\n- 策略: `{profile['label']}`\n- 周期: `{cycle_count}`\n- 层数: `{layer}`\n- 方向: `{profile['direction']}`\n- 市场: `{market.slug}`\n- 结果: `LOSS`\n- 入场: `{entry:.4f}`\n- 结算: `0.0000`\n- 本行盈亏估算: `{pnl:+.2f}` USDC",
+                    f"### Polymarket 反转实盘结果\n\n- 策略: `{profile['label']}`\n- 周期: `{cycle_count}`\n- 层数: `{layer}`\n- 方向: `{profile['direction']}`\n- 市场: `{market.slug}`\n- 结果: `LOSS`\n- 入场: `{entry:.4f} (verified={fill_verified})`\n- 结算: `data-api 仓位归零`\n- 本行盈亏估算: `{pnl:+.2f}` USDC",
                 )
                 if self.live_auto_stop_requested.is_set():
                     break
@@ -1939,6 +1945,80 @@ class PolyQuickTrader:
             self.logger.warning("读取持仓失败: %s", e)
             return []
         return data if isinstance(data, list) else []
+
+    async def _fetch_positions_raw(self):
+        """
+        Like fetch_positions() but raises on HTTP/transport error instead
+        of silently returning []. Settlement-critical callers MUST use this
+        so a network failure is never confused with "user has no positions".
+        """
+        user = self.ent_funder.get().strip()
+        if not user:
+            return []
+        params = {
+            "user": user,
+            "limit": "50",
+            "sizeThreshold": "0",
+            "sortBy": "CURRENT",
+            "sortDirection": "DESC",
+        }
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=12), headers={"User-Agent": "Mozilla/5.0"}) as session:
+            async with session.get("https://data-api.polymarket.com/positions", params=params) as response:
+                if response.status != 200:
+                    raise RuntimeError(f"positions HTTP {response.status}")
+                data = await response.json()
+        return data if isinstance(data, list) else []
+
+    async def _settle_from_positions(self, token_id: str, deadline_ts: float, stop_event=None):
+        """
+        Poll data-api /positions to determine WIN/LOSS for a token_id.
+        Returns: 'win' | 'loss' | 'pending_timeout'.
+
+        Per data-api OpenAPI (Position.redeemable):
+          - asset == token_id + size > 0 + redeemable == True  → WIN
+          - asset == token_id + size > 0 + redeemable == False → still settling, retry
+          - asset not in positions list                         → LOSS (loser side burned)
+
+        Uses _fetch_positions_raw so a transient HTTP/network failure is
+        retried (does NOT advance the absent-state machine that would
+        otherwise misfire as LOSS — protects against double-failure
+        misclassification feeding bad data to martingale.)
+
+        Backoff: exponential 5s → 60s cap. Aborts if stop_event set or time > deadline_ts.
+        """
+        backoff = 5.0
+        last_state = None
+        while time.time() < deadline_ts:
+            if stop_event is not None and stop_event.is_set():
+                return "pending_timeout"
+            try:
+                positions = await self._fetch_positions_raw()
+            except Exception as e:
+                self.logger.warning("settle 阶段 positions fetch 失败 (重试): %s", e)
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 1.5, 60.0)
+                continue
+            match = next((p for p in positions if p.get("asset") == token_id), None)
+            if match is None:
+                # Position not present → loser side burned by resolution.
+                # Guard against transient empty-list (fetch failure) by requiring
+                # this state to persist one cycle.
+                if last_state == "absent":
+                    return "loss"
+                last_state = "absent"
+            else:
+                size = self._float_or_zero(match.get("size"))
+                if size <= 0.000001:
+                    if last_state == "absent":
+                        return "loss"
+                    last_state = "absent"
+                elif match.get("redeemable") is True:
+                    return "win"
+                else:
+                    last_state = "pending"
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 1.5, 60.0)
+        return "pending_timeout"
 
     def refresh_positions_button_clicked(self):
         def worker():
