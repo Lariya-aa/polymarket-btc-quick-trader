@@ -2231,12 +2231,15 @@ class PolyQuickTrader:
 
 
 def acquire_single_instance_lock():
-    lock_file = open(LOCK_FILE, "w", encoding="utf-8")
+    lock_file = open(LOCK_FILE, "a+", encoding="utf-8")
     try:
         fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
+    except OSError:
         print("PolyQuickTrader is already running.", file=sys.stderr)
+        lock_file.close()
         return None
+    lock_file.seek(0)
+    lock_file.truncate(0)
     lock_file.write(str(os.getpid()))
     lock_file.flush()
     return lock_file
