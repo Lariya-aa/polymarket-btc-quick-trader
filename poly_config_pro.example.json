@@ -3,20 +3,12 @@
     "signature_type": "3",
     "quick_usdc": "5",
     "quick_max_price": "0.60",
-    "paper_usdc": "5",
-    "paper_take_profit": "0.60",
-    "paper_poll_seconds": "3",
-    "paper_decision_lead_seconds": "120",
-    "paper_rounds": "40",
-    "paper_max_hours": "12",
     "reversal_usdc": "5",
     "reversal_layers": "3",
     "reversal_days": "365",
     "reversal_entry": "0.50",
     "live_usdc": "5",
-    "live_take_profit": "0.60",
-    "live_poll_seconds": "3",
-    "live_decision_lead_seconds": "120",
-    "live_rounds": "4",
-    "live_max_hours": "2"
+    "live_layers": "3",
+    "live_entry": "0.50",
+    "live_max_hours": "24"
 }
