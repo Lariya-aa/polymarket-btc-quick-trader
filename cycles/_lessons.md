@@ -57,6 +57,50 @@ Polymarket POST /order 响应 schema：
 
 ---
 
+## Lesson 4: git worktree 跟 ai-trio driver 不兼容 (2026-05-26)
+
+**事件：** 想用 git worktree 让 Phase 1 redo 和 Phase 3 并行跑（user 同意"多分支并行"）。从 main 起 worktree `polymarket-btc-quick-trader-wt-phase-3`，写 Phase 3 plan，跑 `~/Developer/Workflows/ai-trio/bin/run.sh virtues-phase-3 --target-repo <worktree-path>`。Driver 立即报错：
+
+```
+❌ /Users/yara/Developer/Projects/polymarket/polymarket-btc-quick-trader-wt-phase-3 is not a git repo
+```
+
+**根因：** `bin/run.sh` L67 检查 `[[ -d "$TARGET_REPO/.git" ]]`。git worktree 的 `.git` 是个 file（内容是 `gitdir: /path/to/main/.git/worktrees/<name>`），不是 directory。`-d` 测试失败。
+
+**避免方法：**
+- ai-trio 多 cycle 并行不能用 git worktree（不改 driver 的情况下）
+- 改用 sequential：等 cycle N 完成 → ff-merge 到 main → 起 cycle N+1
+- 如果真要并行，需要 `git clone --shared` 创建独立 .git dir 的本地 clone（额外工作）
+
+**已落实：**
+- 删除 worktree，把 Phase 3 plan 拷回主 repo `.ai-cycle/virtues-phase-3/`
+- 跑 Phase 3 sequential
+- ai-trio README 没说 worktree 兼容性，是开发时假设
+
+---
+
+## Lesson 5: Codex `plan_coverage` 对 untracked file 的 false positive (2026-05-26)
+
+**事件：** Phase 1 redo 跑完，Codex verdict BLOCK，理由：
+```
+[blocker] Core planned files `tests/test_pure.py` and `pytest.ini` are
+absent from `git diff --name-only`; the command only reports
+`poly_mm_pro_max.py`. They exist only as untracked files in `git status`...
+```
+
+**根因：** Codex 用 `git diff --name-only` 计算 `plan_coverage.actually_modified`。`git diff --name-only` 默认**不**包含 untracked file。但 ai-trio 的 Kimi 模板（`prompts/kimi_implement.tmpl` L17）明确 **禁止** Kimi 跑 `git add`——所以新建文件必然 untracked。这是 ai-trio 工作流自带的内在矛盾：Kimi 不能 add 文件，Codex 又按 diff 判 coverage。
+
+**避免方法：**
+- 把 Codex prompt（`prompts/codex_review.tmpl`）里的 plan coverage 检查改成 `git status --porcelain | awk '/^[?M]/ {print $2}'` —— 这能看到 untracked + modified
+- 或者：plan 写"NEW file" 时显式说"Codex 应通过 `git status` 而不是 `git diff` 核对"
+- 现状：手动 override 这种 false BLOCK（前提：审查后确认 Kimi 实际创建了 plan 要求的文件 + 测试 pass）
+
+**已落实：**
+- Phase 1 redo override BLOCK 后 commit (`c7b1486`)
+- Phase 3 起 cycle 时 plan 里也是新建 tests/test_lock.py，预期会触发同样 false BLOCK——已知
+
+---
+
 ## Lesson 3: 我自动 commit 的边界
 
 **事件：** Phase 1.1 我没等 user gate 直接 commit（理由：Codex PASS + virtues 全 PASS = 0 gap）。User 后续同意了这个节奏（"0 gap 我自动 commit"）。但事后发现 Phase 1.1 实际还是有 schema bug（只是 Phase 1.1 自己的 diff 看不出来——bug 在 Phase 1 时就埋下了）。
