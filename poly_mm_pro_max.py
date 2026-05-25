@@ -28,6 +28,8 @@ CLOB_HOST = "https://clob.polymarket.com"
 MINIMAX_CHAT_URL = "https://api.minimaxi.com/v1/chat/completions"
 MINIMAX_MODEL = "MiniMax-M2.7"
 CHAIN_ID = 137
+REVERSAL_MODE_RED_UP = "三连阴转UP"
+REVERSAL_MODE_GREEN_DOWN = "三连阳转DOWN"
 
 
 @dataclass
@@ -206,13 +208,17 @@ class PolyQuickTrader:
         self.btn_buy_up.pack(side="left", padx=4)
         self.btn_buy_down = ttk.Button(quick_ctrl_frame, text="买 Down", width=10, command=lambda: self.buy_selected_quick_market("DOWN"))
         self.btn_buy_down.pack(side="left", padx=4)
-        reversal_frame = ttk.LabelFrame(auto_tab, text=" 三连阴反弹 UP 策略研究 ", padding=10)
+        reversal_frame = ttk.LabelFrame(auto_tab, text=" 反转策略研究 ", padding=10)
         reversal_frame.pack(fill="x", padx=0, pady=5)
         reversal_row1 = ttk.Frame(reversal_frame)
         reversal_row1.pack(fill="x", pady=(0, 4))
         reversal_row2 = ttk.Frame(reversal_frame)
         reversal_row2.pack(fill="x")
-        ttk.Label(reversal_row1, text="首单U:").pack(side="left", padx=(4, 4))
+        ttk.Label(reversal_row1, text="策略:").pack(side="left", padx=(4, 4))
+        self.cbo_reversal_mode = ttk.Combobox(reversal_row1, width=14, state="readonly", values=(REVERSAL_MODE_RED_UP, REVERSAL_MODE_GREEN_DOWN))
+        self.cbo_reversal_mode.set(REVERSAL_MODE_RED_UP)
+        self.cbo_reversal_mode.pack(side="left", padx=4)
+        ttk.Label(reversal_row1, text="首单U:").pack(side="left", padx=(8, 4))
         self.ent_reversal_usdc = ttk.Entry(reversal_row1, width=7)
         self.ent_reversal_usdc.insert(0, "5")
         self.ent_reversal_usdc.pack(side="left", padx=4)
@@ -228,11 +234,11 @@ class PolyQuickTrader:
         self.ent_reversal_entry = ttk.Entry(reversal_row1, width=7)
         self.ent_reversal_entry.insert(0, "0.50")
         self.ent_reversal_entry.pack(side="left", padx=4)
-        self.btn_reversal_backtest = ttk.Button(reversal_row2, text="三连阴回测", width=16, command=self.reversal_backtest_button_clicked)
+        self.btn_reversal_backtest = ttk.Button(reversal_row2, text="反转策略回测", width=16, command=self.reversal_backtest_button_clicked)
         self.btn_reversal_backtest.pack(side="left", padx=4)
-        self.btn_reversal_live = ttk.Button(reversal_row2, text="三连阴实时模拟", width=18, command=self.reversal_live_button_clicked)
+        self.btn_reversal_live = ttk.Button(reversal_row2, text="反转策略实时模拟", width=18, command=self.reversal_live_button_clicked)
         self.btn_reversal_live.pack(side="left", padx=4)
-        self.btn_stop_reversal = ttk.Button(reversal_row2, text="停止三连阴模拟", width=18, command=self.stop_reversal_clicked, state="disabled")
+        self.btn_stop_reversal = ttk.Button(reversal_row2, text="停止反转模拟", width=18, command=self.stop_reversal_clicked, state="disabled")
         self.btn_stop_reversal.pack(side="left", padx=4)
 
         self.lbl_quick_signal = ttk.Label(quick_frame, text="只做辅助判断；每次真实下单前都会确认。", foreground="#475569")
@@ -261,12 +267,12 @@ class PolyQuickTrader:
 
         auto_ctrl_frame = ttk.Frame(auto_tab)
         auto_ctrl_frame.pack(fill="x", pady=(0, 8))
-        self.btn_strategy_logic = ttk.Button(auto_ctrl_frame, text="三连阴策略说明", width=16, command=self.show_strategy_logic)
+        self.btn_strategy_logic = ttk.Button(auto_ctrl_frame, text="反转策略说明", width=16, command=self.show_strategy_logic)
         self.btn_strategy_logic.pack(side="left", padx=4)
-        self.btn_enable_live_auto = ttk.Button(auto_ctrl_frame, text="显示三连阴实盘", width=20, command=self.enable_live_auto_tab)
+        self.btn_enable_live_auto = ttk.Button(auto_ctrl_frame, text="显示反转实盘", width=20, command=self.enable_live_auto_tab)
         self.btn_enable_live_auto.pack(side="left", padx=4)
 
-        paper_result_frame = ttk.LabelFrame(auto_tab, text=" 三连阴模拟结果 ", padding=6)
+        paper_result_frame = ttk.LabelFrame(auto_tab, text=" 反转模拟结果 ", padding=6)
         paper_result_frame.pack(fill="x", pady=(8, 0))
         self.paper_tree = ttk.Treeview(
             paper_result_frame,
@@ -366,14 +372,18 @@ class PolyQuickTrader:
         self.setup_live_auto_tab()
 
     def setup_live_auto_tab(self):
-        live_frame = ttk.LabelFrame(self.live_tab, text=" 三连阴 UP 实盘 ", padding=10)
+        live_frame = ttk.LabelFrame(self.live_tab, text=" 反转策略实盘 ", padding=10)
         live_frame.pack(fill="x", padx=0, pady=5)
         live_row1 = ttk.Frame(live_frame)
         live_row1.pack(fill="x", pady=(0, 4))
         live_row2 = ttk.Frame(live_frame)
         live_row2.pack(fill="x")
 
-        ttk.Label(live_row1, text="首单U:").pack(side="left", padx=(4, 4))
+        ttk.Label(live_row1, text="策略:").pack(side="left", padx=(4, 4))
+        self.cbo_live_mode = ttk.Combobox(live_row1, width=14, state="readonly", values=(REVERSAL_MODE_RED_UP, REVERSAL_MODE_GREEN_DOWN))
+        self.cbo_live_mode.set(REVERSAL_MODE_RED_UP)
+        self.cbo_live_mode.pack(side="left", padx=4)
+        ttk.Label(live_row1, text="首单U:").pack(side="left", padx=(8, 4))
         self.ent_live_usdc = ttk.Entry(live_row1, width=7)
         self.ent_live_usdc.insert(0, "5")
         self.ent_live_usdc.pack(side="left", padx=4)
@@ -389,12 +399,12 @@ class PolyQuickTrader:
         self.ent_live_max_hours = ttk.Entry(live_row2, width=7)
         self.ent_live_max_hours.insert(0, "24")
         self.ent_live_max_hours.pack(side="left", padx=4)
-        self.btn_start_live_auto = ttk.Button(live_row2, text="启动三连阴实盘", width=18, command=self.live_auto_button_clicked)
+        self.btn_start_live_auto = ttk.Button(live_row2, text="启动反转实盘", width=18, command=self.live_auto_button_clicked)
         self.btn_start_live_auto.pack(side="left", padx=(10, 4))
-        self.btn_stop_live_auto = ttk.Button(live_row2, text="停止三连阴实盘", width=18, command=self.stop_live_auto_clicked, state="disabled")
+        self.btn_stop_live_auto = ttk.Button(live_row2, text="停止反转实盘", width=18, command=self.stop_live_auto_clicked, state="disabled")
         self.btn_stop_live_auto.pack(side="left", padx=4)
 
-        live_result_frame = ttk.LabelFrame(self.live_tab, text=" 三连阴实盘结果 ", padding=6)
+        live_result_frame = ttk.LabelFrame(self.live_tab, text=" 反转实盘结果 ", padding=6)
         live_result_frame.pack(fill="x", pady=(8, 0))
         self.live_tree = ttk.Treeview(
             live_result_frame,
@@ -434,14 +444,15 @@ class PolyQuickTrader:
 
     def show_strategy_logic(self):
         messagebox.showinfo(
-            "三连阴反弹 UP 策略逻辑",
+            "反转策略逻辑",
             "当前策略逻辑：\n\n"
             "1. 只观察 BTCUSDT 15m K 线。\n"
-            "2. 出现新的连续 3 根阴线后，下一根买 UP。\n"
-            "3. 如果本单结算亏损，下一根继续加注买 UP。\n"
-            "4. 加注金额按手续费和回本目标自动计算，默认 5 -> 10.36 -> 21.48。\n"
-            "5. 最多跑设置的单数，默认 3 单，失败后停止本周期并等待下一次新的 3 连阴。\n"
-            "6. 回测和实时模拟不会真实下单；隐藏的实盘页会真实提交买单。",
+            "2. 三连阴转 UP：出现新的连续 3 根阴线后，下一根买 UP。\n"
+            "3. 三连阳转 DOWN：出现新的连续 3 根阳线后，下一根买 DOWN。\n"
+            "4. 如果本单结算亏损，下一根继续按同方向加注。\n"
+            "5. 加注金额按手续费和回本目标自动计算，默认 5 -> 10.36 -> 21.48。\n"
+            "6. 最多跑设置的单数，默认 3 单，失败后停止本周期并等待下一次新的触发。\n"
+            "7. 回测和实时模拟不会真实下单；隐藏的实盘页会真实提交买单。",
         )
 
     def enable_live_auto_tab(self):
@@ -449,20 +460,20 @@ class PolyQuickTrader:
             self.main_notebook.select(self.live_tab)
             return
         if not messagebox.askyesno(
-            "显示三连阴实盘",
-            "三连阴实盘会在触发信号后真实提交 Polymarket UP 买入订单。\n\n"
+            "显示反转实盘",
+            "反转实盘会在触发信号后真实提交 Polymarket UP 或 DOWN 买入订单。\n\n"
             "确认后才会显示实盘分页。是否继续？",
         ):
             return
         if not messagebox.askyesno(
             "二次确认",
-            "请再次确认：你理解三连阴实盘策略可能连续亏损，并愿意自行承担风险。\n\n显示三连阴实盘分页？",
+            "请再次确认：你理解反转实盘策略可能连续亏损，并愿意自行承担风险。\n\n显示反转实盘分页？",
         ):
             return
         self.live_auto_enabled = True
-        self.main_notebook.add(self.live_tab, text="三连阴实盘")
+        self.main_notebook.add(self.live_tab, text="反转实盘")
         self.main_notebook.select(self.live_tab)
-        self.log_live(logging.WARNING, "三连阴实盘分页已显示；启动前请再次确认参数。")
+        self.log_live(logging.WARNING, "反转实盘分页已显示；启动前请再次确认策略和参数。")
 
     def load_credentials_from_env(self):
         env_map = {
@@ -514,10 +525,12 @@ class PolyQuickTrader:
             "signature_type": self.cbo_signature_type.get(),
             "quick_usdc": self.ent_quick_usdc.get().strip(),
             "quick_max_price": self.ent_quick_max_price.get().strip(),
+            "reversal_mode": self.cbo_reversal_mode.get().strip(),
             "reversal_usdc": self.ent_reversal_usdc.get().strip(),
             "reversal_layers": self.ent_reversal_layers.get().strip(),
             "reversal_days": self.ent_reversal_days.get().strip(),
             "reversal_entry": self.ent_reversal_entry.get().strip(),
+            "live_mode": self.cbo_live_mode.get().strip(),
             "live_usdc": self.ent_live_usdc.get().strip(),
             "live_layers": self.ent_live_layers.get().strip(),
             "live_entry": self.ent_live_entry.get().strip(),
@@ -547,10 +560,12 @@ class PolyQuickTrader:
                 self.cbo_signature_type.set(str(config.get("signature_type")).strip())
             self._set_entry(self.ent_quick_usdc, config.get("quick_usdc", "5"))
             self._set_entry(self.ent_quick_max_price, config.get("quick_max_price", "0.60"))
+            self.cbo_reversal_mode.set(config.get("reversal_mode", REVERSAL_MODE_RED_UP))
             self._set_entry(self.ent_reversal_usdc, config.get("reversal_usdc", "5"))
             self._set_entry(self.ent_reversal_layers, config.get("reversal_layers", "3"))
             self._set_entry(self.ent_reversal_days, config.get("reversal_days", "365"))
             self._set_entry(self.ent_reversal_entry, config.get("reversal_entry", "0.50"))
+            self.cbo_live_mode.set(config.get("live_mode", config.get("reversal_mode", REVERSAL_MODE_RED_UP)))
             self._set_entry(self.ent_live_usdc, config.get("live_usdc", "5"))
             self._set_entry(self.ent_live_layers, config.get("live_layers", config.get("reversal_layers", "3")))
             self._set_entry(self.ent_live_entry, config.get("live_entry", config.get("reversal_entry", "0.50")))
@@ -1102,6 +1117,7 @@ class PolyQuickTrader:
     def reversal_config_from_ui(self):
         try:
             config = {
+                "mode": self.cbo_reversal_mode.get().strip() or REVERSAL_MODE_RED_UP,
                 "initial_usdc": float(self.ent_reversal_usdc.get().strip()),
                 "max_layers": int(float(self.ent_reversal_layers.get().strip())),
                 "days": int(float(self.ent_reversal_days.get().strip())),
@@ -1109,7 +1125,7 @@ class PolyQuickTrader:
                 "fee_rate": 0.07,
             }
         except ValueError:
-            messagebox.showerror("参数错误", "三连阴策略参数必须是数字。")
+            messagebox.showerror("参数错误", "反转策略参数必须是数字。")
             return None
         if config["initial_usdc"] <= 0:
             messagebox.showerror("参数错误", "首单U必须大于 0。")
@@ -1123,16 +1139,55 @@ class PolyQuickTrader:
         if not (0 < config["entry_price"] < 1):
             messagebox.showerror("参数错误", "入场价必须在 0 到 1 之间。")
             return None
+        if config["mode"] not in {REVERSAL_MODE_RED_UP, REVERSAL_MODE_GREEN_DOWN}:
+            messagebox.showerror("参数错误", "请选择有效的反转策略。")
+            return None
         return config
+
+    def reversal_profile(self, mode):
+        if mode == REVERSAL_MODE_GREEN_DOWN:
+            return {
+                "mode": REVERSAL_MODE_GREEN_DOWN,
+                "label": "三连阳转阴 DOWN",
+                "trigger_color": "G",
+                "trigger_name": "阳线",
+                "win_color": "R",
+                "direction": "DOWN",
+                "token_attr": "no_id",
+                "ask_attr": "down_ask",
+                "settlement_bid_attr": "down_bid",
+            }
+        return {
+            "mode": REVERSAL_MODE_RED_UP,
+            "label": "三连阴转阳 UP",
+            "trigger_color": "R",
+            "trigger_name": "阴线",
+            "win_color": "G",
+            "direction": "UP",
+            "token_attr": "yes_id",
+            "ask_attr": "up_ask",
+            "settlement_bid_attr": "up_bid",
+        }
+
+    def matching_streak(self, colors, target_color):
+        streak = 0
+        for color in reversed(colors):
+            if color == target_color:
+                streak += 1
+            else:
+                break
+        return streak
 
     def reversal_backtest_button_clicked(self):
         config = self.reversal_config_from_ui()
         if not config:
             return
         self.btn_reversal_backtest.configure(state="disabled")
+        profile = self.reversal_profile(config["mode"])
         self.log_auto(
             logging.INFO,
-            "开始三连阴回测: days=%s initial=%.2f layers=%s entry=%.2f",
+            "开始%s回测: days=%s initial=%.2f layers=%s entry=%.2f",
+            profile["label"],
             config["days"],
             config["initial_usdc"],
             config["max_layers"],
@@ -1147,7 +1202,7 @@ class PolyQuickTrader:
                 self.root.after(0, lambda result=result: self.log_auto(logging.INFO, "%s", result))
             except Exception as e:
                 error_text = str(e) or repr(e)
-                self.root.after(0, lambda err=error_text: self.log_auto(logging.ERROR, "三连阴回测失败: %s", err))
+                self.root.after(0, lambda err=error_text: self.log_auto(logging.ERROR, "反转策略回测失败: %s", err))
             finally:
                 loop.close()
                 self.root.after(0, lambda: self.btn_reversal_backtest.configure(state="normal"))
@@ -1156,18 +1211,20 @@ class PolyQuickTrader:
 
     def reversal_live_button_clicked(self):
         if self.reversal_running:
-            messagebox.showinfo("三连阴实时模拟", "三连阴实时模拟正在运行中。")
+            messagebox.showinfo("反转策略实时模拟", "反转策略实时模拟正在运行中。")
             return
         config = self.reversal_config_from_ui()
         if not config:
             return
         self.reversal_running = True
         self.reversal_stop_requested.clear()
-        self.btn_reversal_live.configure(state="disabled", text="三连阴模拟中")
+        profile = self.reversal_profile(config["mode"])
+        self.btn_reversal_live.configure(state="disabled", text="反转模拟中")
         self.btn_stop_reversal.configure(state="normal")
         self.log_auto(
             logging.INFO,
-            "启动三连阴实时模拟: initial=%.2f layers=%s entry=%.2f",
+            "启动%s实时模拟: initial=%.2f layers=%s entry=%.2f",
+            profile["label"],
             config["initial_usdc"],
             config["max_layers"],
             config["entry_price"],
@@ -1178,14 +1235,14 @@ class PolyQuickTrader:
             loop = asyncio.new_event_loop()
             try:
                 result = loop.run_until_complete(self.run_reversal_live_sim(config))
-                self.root.after(0, lambda result=result: self.log_auto(logging.INFO, "三连阴实时模拟结束: %s", result))
+                self.root.after(0, lambda result=result: self.log_auto(logging.INFO, "反转策略实时模拟结束: %s", result))
             except Exception as e:
                 error_text = str(e) or repr(e)
-                self.root.after(0, lambda err=error_text: self.log_auto(logging.ERROR, "三连阴实时模拟失败: %s", err))
+                self.root.after(0, lambda err=error_text: self.log_auto(logging.ERROR, "反转策略实时模拟失败: %s", err))
             finally:
                 loop.close()
                 self.reversal_running = False
-                self.root.after(0, lambda: self.btn_reversal_live.configure(state="normal", text="三连阴实时模拟"))
+                self.root.after(0, lambda: self.btn_reversal_live.configure(state="normal", text="反转策略实时模拟"))
                 self.root.after(0, lambda: self.btn_stop_reversal.configure(state="disabled"))
 
         threading.Thread(target=worker, daemon=True).start()
@@ -1194,7 +1251,7 @@ class PolyQuickTrader:
         if self.reversal_running:
             self.reversal_stop_requested.set()
             self.btn_stop_reversal.configure(state="disabled")
-            self.log_auto(logging.WARNING, "已请求停止三连阴实时模拟。")
+            self.log_auto(logging.WARNING, "已请求停止反转策略实时模拟。")
 
     def reversal_factors(self, entry_price: float, fee_rate: float = 0.07):
         win_factor = 1.0 / entry_price - 1.0 - fee_rate * (1.0 - entry_price)
@@ -1272,6 +1329,7 @@ class PolyQuickTrader:
         rows = await self.fetch_btc_15m_klines(config["days"])
         if len(rows) < 10:
             raise RuntimeError("K 线数量不足，无法回测。")
+        profile = self.reversal_profile(config.get("mode", REVERSAL_MODE_RED_UP))
         colors = [self.kline_color(row) for row in rows]
         stakes, win_factor, loss_factor, target_profit = self.reversal_stakes(
             config["initial_usdc"],
@@ -1282,8 +1340,8 @@ class PolyQuickTrader:
         cycles = []
         i = 2
         while i < len(colors) - 1:
-            is_new_three_red = colors[i - 2:i + 1] == ["R", "R", "R"] and (i < 3 or colors[i - 3] != "R")
-            if not is_new_three_red:
+            is_new_trigger = colors[i - 2:i + 1] == [profile["trigger_color"]] * 3 and (i < 3 or colors[i - 3] != profile["trigger_color"])
+            if not is_new_trigger:
                 i += 1
                 continue
             trigger_index = i
@@ -1295,7 +1353,7 @@ class PolyQuickTrader:
                 if trade_index >= len(colors):
                     break
                 last_trade_index = trade_index
-                win = colors[trade_index] == "G"
+                win = colors[trade_index] == profile["win_color"]
                 rows_used.append({
                     "layer": layer,
                     "time": self.fmt_kline_time(rows[trade_index]),
@@ -1318,7 +1376,7 @@ class PolyQuickTrader:
                 "rows": rows_used,
             })
             i = last_trade_index + 1
-            while i < len(colors) and colors[i] == "R":
+            while i < len(colors) and colors[i] == profile["trigger_color"]:
                 i += 1
 
         total_pnl = sum(item["pnl"] for item in cycles)
@@ -1333,7 +1391,7 @@ class PolyQuickTrader:
             max_drawdown = min(max_drawdown, equity - peak)
         full_loss = -sum(loss_factor * stake for stake in stakes)
         lines = [
-            "三连阴反弹 UP 回测完成",
+            f"{profile['label']} 回测完成",
             f"区间: {self.fmt_kline_time(rows[0])} 到 {self.fmt_kline_time(rows[-1])}",
             f"K线数: {len(rows)} | 触发周期: {len(cycles)} | 胜: {wins} | 败: {losses} | 胜率: {(wins / len(cycles) * 100 if cycles else 0):.2f}%",
             f"首单: {config['initial_usdc']:.2f}U | 入场价: {config['entry_price']:.2f} | 最多单数: {config['max_layers']}",
@@ -1348,13 +1406,14 @@ class PolyQuickTrader:
         return "\n".join(lines)
 
     async def run_reversal_live_sim(self, config):
+        profile = self.reversal_profile(config.get("mode", REVERSAL_MODE_RED_UP))
         stakes, win_factor, loss_factor, target_profit = self.reversal_stakes(
             config["initial_usdc"],
             config["entry_price"],
             config["max_layers"],
             config["fee_rate"],
         )
-        self.log_auto(logging.INFO, "三连阴下注序列: %s", " -> ".join(f"{x:.2f}" for x in stakes))
+        self.log_auto(logging.INFO, "%s 下注序列: %s", profile["label"], " -> ".join(f"{x:.2f}" for x in stakes))
         seen_triggers = set()
         cycle_count = 0
         while not self.reversal_stop_requested.is_set():
@@ -1364,21 +1423,16 @@ class PolyQuickTrader:
                 continue
             colors = [self.kline_color(row) for row in rows]
             i = len(rows) - 1
-            trigger_found = colors[i - 2:i + 1] == ["R", "R", "R"] and (i < 3 or colors[i - 3] != "R")
+            trigger_found = colors[i - 2:i + 1] == [profile["trigger_color"]] * 3 and (i < 3 or colors[i - 3] != profile["trigger_color"])
             trigger_key = int(rows[i][0])
             if not trigger_found or trigger_key in seen_triggers:
-                red_streak = 0
-                for color in reversed(colors):
-                    if color == "R":
-                        red_streak += 1
-                    else:
-                        break
-                self.log_auto(logging.INFO, "三连阴实时等待中: 当前连续阴线=%s | 最新K线=%s", red_streak, self.fmt_kline_time(rows[-1]))
+                streak = self.matching_streak(colors, profile["trigger_color"])
+                self.log_auto(logging.INFO, "%s 实时等待中: 当前连续%s=%s | 最新K线=%s", profile["label"], profile["trigger_name"], streak, self.fmt_kline_time(rows[-1]))
                 await self.sleep_with_stop(60, self.reversal_stop_requested)
                 continue
             seen_triggers.add(trigger_key)
             cycle_count += 1
-            self.log_auto(logging.INFO, "触发三连阴实时模拟 #%s: 第3根=%s", cycle_count, self.fmt_kline_time(rows[i]))
+            self.log_auto(logging.INFO, "触发%s实时模拟 #%s: 第3根=%s", profile["label"], cycle_count, self.fmt_kline_time(rows[i]))
             accumulated_loss = 0.0
             cycle_done = False
             for layer, stake in enumerate(stakes, start=1):
@@ -1394,9 +1448,9 @@ class PolyQuickTrader:
                     await self.sleep_with_stop(60, self.reversal_stop_requested)
                 if self.reversal_stop_requested.is_set():
                     break
-                win = self.kline_color(trade_row) == "G"
+                win = self.kline_color(trade_row) == profile["win_color"]
                 if win:
-                    pnl = accumulated_loss + target_profit
+                    pnl = target_profit
                     status = "REVERSAL_WIN"
                     cycle_done = True
                 else:
@@ -1408,7 +1462,7 @@ class PolyQuickTrader:
                     "round": f"R{cycle_count}-{layer}",
                     "slug": f"BTCUSDT 15m {self.fmt_kline_time(trade_row)}",
                     "status": status,
-                    "direction": "UP",
+                    "direction": profile["direction"],
                     "entry": config["entry_price"],
                     "current": 1.0 if win else 0.0,
                     "high": 1.0 if win else 0.0,
@@ -1420,7 +1474,7 @@ class PolyQuickTrader:
                 }
                 self.paper_results.append(row)
                 self.root.after(0, self.render_paper_results)
-                self.log_auto(logging.INFO, "三连阴实时第 %s 单: %s", layer, row["result"])
+                self.log_auto(logging.INFO, "%s 实时第 %s 单: %s", profile["label"], layer, row["result"])
                 if cycle_done or layer == len(stakes):
                     break
             await self.sleep_with_stop(60, self.reversal_stop_requested)
@@ -1428,10 +1482,11 @@ class PolyQuickTrader:
 
     def live_auto_button_clicked(self):
         if self.live_auto_running:
-            messagebox.showinfo("三连阴实盘", "三连阴实盘正在运行中。")
+            messagebox.showinfo("反转策略实盘", "反转策略实盘正在运行中。")
             return
         try:
             config = {
+                "mode": self.cbo_live_mode.get().strip() or REVERSAL_MODE_RED_UP,
                 "initial_usdc": float(self.ent_live_usdc.get().strip()),
                 "max_layers": int(float(self.ent_live_layers.get().strip())),
                 "entry_price": float(self.ent_live_entry.get().strip()),
@@ -1439,7 +1494,10 @@ class PolyQuickTrader:
                 "fee_rate": 0.07,
             }
         except ValueError:
-            messagebox.showerror("参数错误", "三连阴实盘参数必须是数字。")
+            messagebox.showerror("参数错误", "反转策略实盘参数必须是数字。")
+            return
+        if config["mode"] not in {REVERSAL_MODE_RED_UP, REVERSAL_MODE_GREEN_DOWN}:
+            messagebox.showerror("参数错误", "请选择有效的实盘反转策略。")
             return
         if config["initial_usdc"] <= 0:
             messagebox.showerror("参数错误", "首单U必须大于 0。")
@@ -1453,14 +1511,15 @@ class PolyQuickTrader:
         if config["max_hours"] <= 0 or config["max_hours"] > 168:
             messagebox.showerror("参数错误", "最多小时必须在 0 到 168 之间。")
             return
+        profile = self.reversal_profile(config["mode"])
         stakes, _, _, _ = self.reversal_stakes(config["initial_usdc"], config["entry_price"], config["max_layers"], config["fee_rate"])
         if not messagebox.askyesno(
-            "确认启动三连阴实盘",
-            f"即将启动真实三连阴 UP 策略：\n\n"
+            "确认启动反转实盘",
+            f"即将启动真实{profile['label']}策略：\n\n"
             f"下注序列: {' -> '.join(f'{x:.2f}' for x in stakes)} USDC\n"
             f"最高入场价: {config['entry_price']:.4f}\n"
             f"最多小时: {config['max_hours']:.2f}\n\n"
-            "触发后程序会真实提交 UP 买入订单，可能连续亏损。确认启动？",
+            f"触发后程序会真实提交 {profile['direction']} 买入订单，可能连续亏损。确认启动？",
         ):
             return
 
@@ -1468,11 +1527,12 @@ class PolyQuickTrader:
         self.live_auto_stop_requested.clear()
         self.live_results = []
         self.render_live_results()
-        self.btn_start_live_auto.configure(state="disabled", text="三连阴实盘运行中")
+        self.btn_start_live_auto.configure(state="disabled", text="反转实盘运行中")
         self.btn_stop_live_auto.configure(state="normal")
         self.log_live(
             logging.WARNING,
-            "启动三连阴实盘: max_hours=%.2f | initial=%.2f | layers=%s | max_entry=%.2f",
+            "启动%s实盘: max_hours=%.2f | initial=%.2f | layers=%s | max_entry=%.2f",
+            profile["label"],
             config["max_hours"],
             config["initial_usdc"],
             config["max_layers"],
@@ -1484,14 +1544,14 @@ class PolyQuickTrader:
             loop = asyncio.new_event_loop()
             try:
                 result = loop.run_until_complete(self.run_reversal_live_real(config))
-                self.root.after(0, lambda result=result: self.log_live(logging.WARNING, "三连阴实盘结束: %s", result))
+                self.root.after(0, lambda result=result: self.log_live(logging.WARNING, "反转策略实盘结束: %s", result))
             except Exception as e:
                 error_text = str(e) or repr(e)
-                self.root.after(0, lambda err=error_text: self.log_live(logging.ERROR, "三连阴实盘失败: %s", err))
+                self.root.after(0, lambda err=error_text: self.log_live(logging.ERROR, "反转策略实盘失败: %s", err))
             finally:
                 loop.close()
                 self.live_auto_running = False
-                self.root.after(0, lambda: self.btn_start_live_auto.configure(state="normal", text="启动三连阴实盘"))
+                self.root.after(0, lambda: self.btn_start_live_auto.configure(state="normal", text="启动反转实盘"))
                 self.root.after(0, lambda: self.btn_stop_live_auto.configure(state="disabled"))
 
         threading.Thread(target=worker, daemon=True).start()
@@ -1500,9 +1560,10 @@ class PolyQuickTrader:
         if self.live_auto_running:
             self.live_auto_stop_requested.set()
             self.btn_stop_live_auto.configure(state="disabled")
-            self.log_live(logging.WARNING, "已请求停止三连阴实盘；不会新增下一单。")
+            self.log_live(logging.WARNING, "已请求停止反转策略实盘；不会新增下一单。")
 
     async def run_reversal_live_real(self, config):
+        profile = self.reversal_profile(config.get("mode", REVERSAL_MODE_RED_UP))
         stakes, win_factor, loss_factor, target_profit = self.reversal_stakes(
             config["initial_usdc"],
             config["entry_price"],
@@ -1510,7 +1571,7 @@ class PolyQuickTrader:
             config["fee_rate"],
         )
         deadline = time.time() + config["max_hours"] * 3600
-        self.log_live(logging.WARNING, "三连阴实盘下注序列: %s", " -> ".join(f"{x:.2f}" for x in stakes))
+        self.log_live(logging.WARNING, "%s 实盘下注序列: %s", profile["label"], " -> ".join(f"{x:.2f}" for x in stakes))
         seen_triggers = set()
         cycle_count = 0
         while not self.live_auto_stop_requested.is_set() and time.time() < deadline:
@@ -1520,22 +1581,17 @@ class PolyQuickTrader:
                 continue
             colors = [self.kline_color(row) for row in rows]
             i = len(rows) - 1
-            trigger_found = colors[i - 2:i + 1] == ["R", "R", "R"] and (i < 3 or colors[i - 3] != "R")
+            trigger_found = colors[i - 2:i + 1] == [profile["trigger_color"]] * 3 and (i < 3 or colors[i - 3] != profile["trigger_color"])
             trigger_key = int(rows[i][0])
             if not trigger_found or trigger_key in seen_triggers:
-                red_streak = 0
-                for color in reversed(colors):
-                    if color == "R":
-                        red_streak += 1
-                    else:
-                        break
-                self.log_live(logging.INFO, "三连阴实盘等待中: 当前连续阴线=%s | 最新K线=%s", red_streak, self.fmt_kline_time(rows[-1]))
+                streak = self.matching_streak(colors, profile["trigger_color"])
+                self.log_live(logging.INFO, "%s 实盘等待中: 当前连续%s=%s | 最新K线=%s", profile["label"], profile["trigger_name"], streak, self.fmt_kline_time(rows[-1]))
                 await self.sleep_with_stop(60, self.live_auto_stop_requested)
                 continue
 
             seen_triggers.add(trigger_key)
             cycle_count += 1
-            self.log_live(logging.WARNING, "触发三连阴实盘 #%s: 第3根=%s", cycle_count, self.fmt_kline_time(rows[i]))
+            self.log_live(logging.WARNING, "触发%s实盘 #%s: 第3根=%s", profile["label"], cycle_count, self.fmt_kline_time(rows[i]))
             accumulated_loss = 0.0
             for layer, stake in enumerate(stakes, start=1):
                 if self.live_auto_stop_requested.is_set() or time.time() >= deadline:
@@ -1557,22 +1613,23 @@ class PolyQuickTrader:
                     await self.sleep_with_stop(5, self.live_auto_stop_requested)
                     market = await self.fetch_market_by_slug(target_slug)
                 if not market:
-                    self.log_live(logging.WARNING, "未找到三连阴实盘目标市场，跳过本周期: %s", target_slug)
+                    self.log_live(logging.WARNING, "未找到反转实盘目标市场，跳过本周期: %s", target_slug)
                     break
-                book = await self.best_bid_ask_for_token(market.yes_id)
-                ask = book["ask"] if book["ask"] is not None else market.up_ask
+                token_id = getattr(market, profile["token_attr"])
+                book = await self.best_bid_ask_for_token(token_id)
+                ask = book["ask"] if book["ask"] is not None else getattr(market, profile["ask_attr"])
                 if ask > config["entry_price"]:
-                    self.log_live(logging.WARNING, "第 %s 单跳过: UP ask=%.4f 高于最高入场价 %.4f", layer, ask, config["entry_price"])
+                    self.log_live(logging.WARNING, "第 %s 单跳过: %s ask=%.4f 高于最高入场价 %.4f", layer, profile["direction"], ask, config["entry_price"])
                     break
 
-                buy_details = await self.buy_quick_market(market, "UP", stake, config["entry_price"])
+                buy_details = await self.buy_quick_market(market, profile["direction"], stake, config["entry_price"])
                 entry = float(buy_details["price"])
                 size = float(buy_details["size"])
                 row = {
                     "round": f"R{cycle_count}-{layer}",
                     "slug": market.slug,
                     "status": "OPEN_REAL",
-                    "direction": "UP",
+                    "direction": profile["direction"],
                     "entry": entry,
                     "current": entry,
                     "high": entry,
@@ -1585,8 +1642,8 @@ class PolyQuickTrader:
                 self.live_results.append(row)
                 self.root.after(0, self.render_live_results)
                 await self.push_to_server_chan(
-                    "Polymarket 三连阴实盘买入",
-                    f"### Polymarket 三连阴实盘买入\n\n- 周期: `{cycle_count}`\n- 层数: `{layer}`\n- 市场: `{market.slug}`\n- 金额: `{stake:.2f}` USDC\n- 入场: `{entry:.4f}`\n- 数量: `{size:.4f}`",
+                    "Polymarket 反转实盘买入",
+                    f"### Polymarket 反转实盘买入\n\n- 策略: `{profile['label']}`\n- 周期: `{cycle_count}`\n- 层数: `{layer}`\n- 方向: `{profile['direction']}`\n- 市场: `{market.slug}`\n- 金额: `{stake:.2f}` USDC\n- 入场: `{entry:.4f}`\n- 数量: `{size:.4f}`",
                 )
 
                 wait_until_close = 0
@@ -1598,18 +1655,18 @@ class PolyQuickTrader:
                 latest_rows = await self.fetch_btc_15m_klines(2)
                 trade_rows = [row_data for row_data in latest_rows if int(row_data[0]) == int(trade_open)]
                 if trade_rows:
-                    win = self.kline_color(trade_rows[0]) == "G"
+                    win = self.kline_color(trade_rows[0]) == profile["win_color"]
                 else:
                     latest_market = await self.fetch_market_by_slug(market.slug) or market
-                    win = bool(latest_market.ended and latest_market.up_bid > 0.9)
+                    win = bool(latest_market.ended and getattr(latest_market, profile["settlement_bid_attr"]) > 0.9)
                 if win:
-                    pnl = accumulated_loss + (1.0 - entry) * size
+                    pnl = (1.0 - entry) * size - accumulated_loss
                     row.update({"status": "REVERSAL_REAL_WIN", "current": 1.0, "high": 1.0, "exit": 1.0, "pnl": pnl, "pnl_pct": pnl / stake * 100 if stake else 0.0})
                     self.root.after(0, self.render_live_results)
-                    self.log_live(logging.WARNING, "三连阴实盘第 %s 单胜: pnl≈%+.2fU", layer, pnl)
+                    self.log_live(logging.WARNING, "%s 实盘第 %s 单胜: pnl≈%+.2fU", profile["label"], layer, pnl)
                     await self.push_to_server_chan(
-                        "Polymarket 三连阴实盘结果",
-                        f"### Polymarket 三连阴实盘结果\n\n- 周期: `{cycle_count}`\n- 层数: `{layer}`\n- 市场: `{market.slug}`\n- 结果: `WIN`\n- 入场: `{entry:.4f}`\n- 结算: `1.0000`\n- 本行盈亏估算: `{pnl:+.2f}` USDC",
+                        "Polymarket 反转实盘结果",
+                        f"### Polymarket 反转实盘结果\n\n- 策略: `{profile['label']}`\n- 周期: `{cycle_count}`\n- 层数: `{layer}`\n- 方向: `{profile['direction']}`\n- 市场: `{market.slug}`\n- 结果: `WIN`\n- 入场: `{entry:.4f}`\n- 结算: `1.0000`\n- 本行盈亏估算: `{pnl:+.2f}` USDC",
                     )
                     break
                 loss = entry * size
@@ -1617,10 +1674,10 @@ class PolyQuickTrader:
                 pnl = -loss
                 row.update({"status": "REVERSAL_REAL_LOSS" if layer == len(stakes) else "REVERSAL_REAL_NEXT", "current": 0.0, "high": row.get("high", entry), "exit": 0.0, "pnl": pnl, "pnl_pct": pnl / stake * 100 if stake else 0.0})
                 self.root.after(0, self.render_live_results)
-                self.log_live(logging.WARNING, "三连阴实盘第 %s 单负: loss≈%.2fU", layer, loss)
+                self.log_live(logging.WARNING, "%s 实盘第 %s 单负: loss≈%.2fU", profile["label"], layer, loss)
                 await self.push_to_server_chan(
-                    "Polymarket 三连阴实盘结果",
-                    f"### Polymarket 三连阴实盘结果\n\n- 周期: `{cycle_count}`\n- 层数: `{layer}`\n- 市场: `{market.slug}`\n- 结果: `LOSS`\n- 入场: `{entry:.4f}`\n- 结算: `0.0000`\n- 本行盈亏估算: `{pnl:+.2f}` USDC",
+                    "Polymarket 反转实盘结果",
+                    f"### Polymarket 反转实盘结果\n\n- 策略: `{profile['label']}`\n- 周期: `{cycle_count}`\n- 层数: `{layer}`\n- 方向: `{profile['direction']}`\n- 市场: `{market.slug}`\n- 结果: `LOSS`\n- 入场: `{entry:.4f}`\n- 结算: `0.0000`\n- 本行盈亏估算: `{pnl:+.2f}` USDC",
                 )
                 if self.live_auto_stop_requested.is_set():
                     break

@@ -8,11 +8,11 @@ Tkinter desktop tool for Polymarket BTC Up/Down short-cycle markets.
 - Computes local BTC short-term probability from Binance 1m candles.
 - Optionally asks MiniMax for a compact probability and action suggestion.
 - Manually confirmed Buy Up / Buy Down orders.
-- Backtests and real-time paper-runs a BTC 15m three-red-candle UP reversal strategy with capped martingale sizing.
-- Hidden live trading tab for the three-red-candle strategy only; it appears after two confirmations and starting it requires another confirmation.
+- Backtests and real-time paper-runs BTC 15m reversal strategies: three-red-candle to UP and three-green-candle to DOWN, both with capped martingale sizing.
+- Hidden live trading tab for the selected reversal strategy only; it appears after two confirmations and starting it requires another confirmation.
 - Position refresh and limit-sell flow.
 - ServerChan notification for submitted trades, including current position PnL snapshot.
-- Separate tabs for manual trading and three-red-candle strategy research, each with its own log output.
+- Separate tabs for manual trading and reversal strategy research, each with its own log output.
 
 ## Setup
 
@@ -57,4 +57,4 @@ python3 poly_mm_pro_max.py
 
 ## Safety
 
-Manual buy and sell actions require UI confirmation before submitting real orders. The three-red-candle live strategy is hidden by default and requires confirmations before it can place real UP buy orders.
+Manual buy and sell actions require UI confirmation before submitting real orders. The reversal live strategy is hidden by default and requires confirmations before it can place real UP or DOWN buy orders.
