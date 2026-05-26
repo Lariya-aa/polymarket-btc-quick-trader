@@ -157,6 +157,8 @@ class PolyQuickTrader:
         self.load_config_from_local()
         self.load_env_file()
         self.load_credentials_from_env()
+        # Phase 11: schedule daily report check (idempotent, fires once per UTC day).
+        self.root.after(5_000, self._daily_report_tick)
 
     def log_category_filter(self, record):
         record.category = getattr(self.log_context, "category", "manual")
@@ -2289,6 +2291,162 @@ class PolyQuickTrader:
                 writer.writerow({k: row.get(k, "") for k in fieldnames})
         except OSError as e:
             logging.getLogger("PolyQuickTrader").warning("trade journal append 失败: %s", e)
+
+    @staticmethod
+    def _aggregate_daily_journal(rows: list[dict], target_date_utc: str) -> dict:
+        """Pure aggregator over trade_journal rows (csv.DictReader-parsed).
+        target_date_utc: 'YYYY-MM-DD'. Counts cycles via (strategy,cycle) tuple."""
+        same_day = [r for r in rows if r.get("ts", "")[:10] == target_date_utc]
+        cycles = {(r["strategy"], r["cycle"]) for r in same_day}
+        wins = [r for r in same_day if r.get("outcome") == "win"]
+        losses = [r for r in same_day if r.get("outcome") == "loss"]
+        timeouts = [r for r in same_day if r.get("outcome") == "pending_timeout"]
+        unverified = [r for r in same_day if r.get("fill_verified") == "False"]
+        pnl_sum = 0.0
+        for r in same_day:
+            try:
+                v = float(r.get("pnl_estimate", "0") or "0")
+            except (TypeError, ValueError):
+                continue
+            # V3 guard (Phase 11 Codex warn): NaN/Inf in pnl_estimate would
+            # poison the entire daily P&L sum (NaN + anything == NaN).
+            if v != v or v in (float("inf"), float("-inf")):
+                continue
+            pnl_sum += v
+        # Max consecutive loss layers within any single (strategy,cycle).
+        max_consec_loss = 0
+        per_cycle: dict[tuple, list[dict]] = {}
+        for r in same_day:
+            per_cycle.setdefault((r["strategy"], r["cycle"]), []).append(r)
+        for rs in per_cycle.values():
+            try:
+                rs_sorted = sorted(rs, key=lambda x: int(x.get("layer", 0)))
+            except (TypeError, ValueError):
+                rs_sorted = rs
+            run = best = 0
+            for r in rs_sorted:
+                if r.get("outcome") == "loss":
+                    run += 1
+                    best = max(best, run)
+                else:
+                    run = 0
+            max_consec_loss = max(max_consec_loss, best)
+        return {
+            "date": target_date_utc,
+            "total_rows": len(same_day),
+            "cycle_count": len(cycles),
+            "win_count": len(wins),
+            "loss_count": len(losses),
+            "pending_timeout_count": len(timeouts),
+            "unverified_fill_count": len(unverified),
+            "pnl_estimate_sum": pnl_sum,
+            "max_consecutive_loss_layers": max_consec_loss,
+            "anomaly_count": len(timeouts) + len(unverified),
+        }
+
+    @staticmethod
+    def _render_daily_report_md(stats: dict) -> str:
+        lines = [
+            f"# Polymarket BTC 反转实盘日报 — {stats['date']} (UTC)",
+            "",
+            f"- 触发周期数: **{stats['cycle_count']}**",
+            f"- 总成交行数: {stats['total_rows']}",
+            f"- WIN: {stats['win_count']}",
+            f"- LOSS: {stats['loss_count']}",
+            f"- 估算 P&L 累计: **{stats['pnl_estimate_sum']:+.4f} USDC** "
+            "（基于 trade_journal.csv 的 pnl_estimate，仍是 model 估算）",
+            f"- 最大单 cycle 连亏层数: {stats['max_consecutive_loss_layers']}",
+            "",
+            "## 异常",
+            f"- pending_timeout: {stats['pending_timeout_count']}",
+            f"- fill_verified=False: {stats['unverified_fill_count']}",
+            f"- 异常总计: **{stats['anomaly_count']}**",
+            "",
+            "链上真实余额变化以 polymarket.com/portfolio 为准。",
+        ]
+        return "\n".join(lines) + "\n"
+
+    def _daily_report_tick(self):
+        """Tk root.after callback. Checks whether a new UTC day has rolled
+        over since the last report; if so, spawns a worker thread to
+        generate + push report for yesterday. Re-schedules itself."""
+        try:
+            # V3 guard (Phase 11 Codex warn): if a previous worker is still
+            # running (slow journal read / Server酱 push), the 60s tick must
+            # NOT spawn a second concurrent worker — that would duplicate the
+            # report + race the marker write.
+            if getattr(self, "_daily_report_running", False):
+                return
+            today_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            last_path = os.path.join("reports", ".daily_report_last.txt")
+            last_reported = ""
+            if os.path.exists(last_path):
+                try:
+                    with open(last_path, "r", encoding="utf-8") as f:
+                        last_reported = f.read().strip()
+                except OSError:
+                    pass
+            # Report for "yesterday" (everything earlier than today_utc).
+            yesterday = (datetime.now(timezone.utc).date() -
+                         __import__("datetime").timedelta(days=1)).strftime("%Y-%m-%d")
+            if last_reported != yesterday:
+                self._daily_report_running = True
+                def worker(day=yesterday, last=last_path):
+                    try:
+                        loop = asyncio.new_event_loop()
+                        try:
+                            loop.run_until_complete(self._generate_and_push_daily_report(day, last))
+                        finally:
+                            loop.close()
+                    except Exception as e:
+                        self.logger.warning("日报生成异常: %s", e)
+                    finally:
+                        self._daily_report_running = False
+                threading.Thread(target=worker, daemon=True).start()
+        finally:
+            self.root.after(60_000, self._daily_report_tick)
+
+    async def _generate_and_push_daily_report(self, target_date_utc: str, last_path: str):
+        import csv as _csv
+        path = "trade_journal.csv"
+        if not os.path.exists(path):
+            self.logger.info("daily report skip: trade_journal.csv 不存在")
+            return
+        rows: list[dict] = []
+        try:
+            with open(path, "r", encoding="utf-8", newline="") as f:
+                rows = list(_csv.DictReader(f))
+        except OSError as e:
+            self.logger.warning("daily report 读取 journal 失败: %s", e)
+            return
+        stats = PolyQuickTrader._aggregate_daily_journal(rows, target_date_utc)
+        if stats["total_rows"] == 0:
+            self.logger.info("daily report skip: %s 当日无交易", target_date_utc)
+            # Still mark as reported so we don't retry every minute.
+            self._mark_daily_reported(target_date_utc, last_path)
+            return
+        body = PolyQuickTrader._render_daily_report_md(stats)
+        os.makedirs("reports", exist_ok=True)
+        out_path = os.path.join("reports", f"daily_report_{target_date_utc}.md")
+        try:
+            with open(out_path, "w", encoding="utf-8") as f:
+                f.write(body)
+        except OSError as e:
+            self.logger.warning("daily report 写文件失败: %s", e)
+        await self.push_to_server_chan(
+            f"Polymarket 日报 {target_date_utc}",
+            body,
+        )
+        self._mark_daily_reported(target_date_utc, last_path)
+
+    @staticmethod
+    def _mark_daily_reported(target_date_utc: str, last_path: str):
+        try:
+            os.makedirs(os.path.dirname(last_path) or ".", exist_ok=True)
+            with open(last_path, "w", encoding="utf-8") as f:
+                f.write(target_date_utc)
+        except OSError:
+            pass
 
     def refresh_positions_button_clicked(self):
         def worker():

@@ -21,3 +21,4 @@ venv/
 env/
 .ai-cycle/
 trade_journal.csv
+reports/
