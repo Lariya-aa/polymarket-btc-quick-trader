@@ -18,6 +18,46 @@ from py_clob_client_v2 import OrderArgs, OrderType, PartialCreateOrderOptions, S
 from py_clob_client_v2.client import ClobClient
 from py_clob_client_v2.clob_types import ApiCreds
 
+# --- Phase 7: shared aiohttp session per asyncio loop ----------------------
+_AIOHTTP_SESSIONS: "dict[int, aiohttp.ClientSession]" = {}
+_AIOHTTP_SESSIONS_LOCK = threading.Lock()
+
+
+def _get_aiohttp_session(default_timeout_total: float = 12.0,
+                        headers: dict | None = None) -> aiohttp.ClientSession:
+    """
+    Return a shared aiohttp.ClientSession bound to the current running loop.
+
+    Keyed by id(loop) so each GUI-click loop gets its own session and closure
+    of a previous loop doesn't poison subsequent clicks. Callers SHOULD pass
+    a per-request `timeout=` to `session.get/post/...` when they need a
+    timeout different from `default_timeout_total` — the session's default
+    is only used when the caller omits `timeout=`.
+    """
+    loop = asyncio.get_running_loop()
+    key = id(loop)
+    with _AIOHTTP_SESSIONS_LOCK:
+        existing = _AIOHTTP_SESSIONS.get(key)
+        if existing is not None and not existing.closed:
+            return existing
+        timeout = aiohttp.ClientTimeout(total=default_timeout_total)
+        session = aiohttp.ClientSession(timeout=timeout, headers=headers or {})
+        _AIOHTTP_SESSIONS[key] = session
+        return session
+
+
+async def _close_aiohttp_sessions():
+    """Close all cached sessions. Called from Tk WM_DELETE_WINDOW handler."""
+    with _AIOHTTP_SESSIONS_LOCK:
+        sessions = list(_AIOHTTP_SESSIONS.values())
+        _AIOHTTP_SESSIONS.clear()
+    for s in sessions:
+        if not s.closed:
+            try:
+                await s.close()
+            except Exception:
+                pass
+
 
 CONFIG_FILE = "poly_config_pro.json"
 LOG_FILE = "poly_mm_pro_max.log"
@@ -635,12 +675,12 @@ class PolyQuickTrader:
 
     async def fetch_json(self, url: str, params=None):
         try:
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=12), headers={"User-Agent": "Mozilla/5.0"}) as session:
-                async with session.get(url, params=params) as response:
-                    if response.status != 200:
-                        self.logger.warning("GET %s 返回 HTTP %s", url, response.status)
-                        return None
-                    return await response.json()
+            session = _get_aiohttp_session()
+            async with session.get(url, params=params, headers={"User-Agent": "Mozilla/5.0"}, timeout=aiohttp.ClientTimeout(total=12)) as response:
+                if response.status != 200:
+                    self.logger.warning("GET %s 返回 HTTP %s", url, response.status)
+                    return None
+                return await response.json()
         except Exception as e:
             self.logger.warning("GET %s 失败: %s", url, e)
             return None
@@ -668,12 +708,12 @@ class PolyQuickTrader:
     async def fetch_quick_btc_markets(self):
         url = f"{POLYMARKET_BASE_URL}/crypto/bitcoin"
         try:
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=12), headers={"User-Agent": "Mozilla/5.0"}) as session:
-                async with session.get(url) as response:
-                    if response.status != 200:
-                        self.logger.warning("BTC 页面返回 HTTP %s", response.status)
-                        return []
-                    html = await response.text()
+            session = _get_aiohttp_session()
+            async with session.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=aiohttp.ClientTimeout(total=12)) as response:
+                if response.status != 200:
+                    self.logger.warning("BTC 页面返回 HTTP %s", response.status)
+                    return []
+                html = await response.text()
         except Exception as e:
             self.logger.warning("读取 BTC 页面失败: %s", e)
             return []
@@ -834,18 +874,18 @@ class PolyQuickTrader:
         params = {"symbol": "BTCUSDT", "interval": "1m", "limit": str(lookback)}
         url = "https://api.binance.com/api/v3/klines"
         try:
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
-                async with session.get(url, params=params) as response:
-                    if response.status != 200:
-                        raise RuntimeError(f"Binance HTTP {response.status}")
-                    klines = await response.json()
+            session = _get_aiohttp_session()
+            async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                if response.status != 200:
+                    raise RuntimeError(f"Binance HTTP {response.status}")
+                klines = await response.json()
         except Exception:
             url = "https://data-api.binance.vision/api/v3/klines"
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
-                async with session.get(url, params=params) as response:
-                    if response.status != 200:
-                        raise RuntimeError(f"Binance vision HTTP {response.status}")
-                    klines = await response.json()
+            session = _get_aiohttp_session()
+            async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                if response.status != 200:
+                    raise RuntimeError(f"Binance vision HTTP {response.status}")
+                klines = await response.json()
 
         closes = [float(row[4]) for row in klines]
         if len(closes) < 30:
@@ -982,16 +1022,17 @@ class PolyQuickTrader:
         timeout = aiohttp.ClientTimeout(total=35, connect=10, sock_read=30)
         for attempt in range(1, 3):
             try:
-                async with aiohttp.ClientSession(timeout=timeout) as session:
-                    async with session.post(
-                        MINIMAX_CHAT_URL,
-                        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                        json=payload,
-                    ) as response:
-                        body = await response.text()
-                        if response.status != 200:
-                            raise RuntimeError(f"MiniMax HTTP {response.status}: {body[:500]}")
-                        return body
+                session = _get_aiohttp_session()
+                async with session.post(
+                    MINIMAX_CHAT_URL,
+                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                    json=payload,
+                    timeout=timeout,
+                ) as response:
+                    body = await response.text()
+                    if response.status != 200:
+                        raise RuntimeError(f"MiniMax HTTP {response.status}: {body[:500]}")
+                    return body
             except Exception as e:
                 last_error = e
                 self.logger.warning("MiniMax 请求第 %s 次失败: %s: %s", attempt, type(e).__name__, str(e) or repr(e))
@@ -1326,12 +1367,12 @@ class PolyQuickTrader:
             last_error = None
             for url in urls:
                 try:
-                    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as session:
-                        async with session.get(url, params=params) as response:
-                            if response.status != 200:
-                                raise RuntimeError(f"Binance kline HTTP {response.status}")
-                            data = await response.json()
-                            break
+                    session = _get_aiohttp_session()
+                    async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=15)) as response:
+                        if response.status != 200:
+                            raise RuntimeError(f"Binance kline HTTP {response.status}")
+                        data = await response.json()
+                        break
                 except Exception as e:
                     last_error = e
             if data is None:
@@ -1892,20 +1933,20 @@ class PolyQuickTrader:
         url = "https://api.binance.com/api/v3/ticker/price"
         params = {"symbol": "BTCUSDT"}
         try:
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
-                async with session.get(url, params=params) as response:
-                    if response.status != 200:
-                        raise RuntimeError(f"Binance ticker HTTP {response.status}")
-                    data = await response.json()
-                    return float(data["price"])
+            session = _get_aiohttp_session()
+            async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                if response.status != 200:
+                    raise RuntimeError(f"Binance ticker HTTP {response.status}")
+                data = await response.json()
+                return float(data["price"])
         except Exception:
             url = "https://data-api.binance.vision/api/v3/ticker/price"
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
-                async with session.get(url, params=params) as response:
-                    if response.status != 200:
-                        raise RuntimeError(f"Binance vision ticker HTTP {response.status}")
-                    data = await response.json()
-                    return float(data["price"])
+            session = _get_aiohttp_session()
+            async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                if response.status != 200:
+                    raise RuntimeError(f"Binance vision ticker HTTP {response.status}")
+                data = await response.json()
+                return float(data["price"])
 
     def buy_selected_quick_market(self, direction: str):
         market = self.selected_quick_market()
@@ -2039,12 +2080,12 @@ class PolyQuickTrader:
             "sortDirection": "DESC",
         }
         try:
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=12), headers={"User-Agent": "Mozilla/5.0"}) as session:
-                async with session.get("https://data-api.polymarket.com/positions", params=params) as response:
-                    if response.status != 200:
-                        self.logger.warning("持仓接口返回 HTTP %s", response.status)
-                        return []
-                    data = await response.json()
+            session = _get_aiohttp_session()
+            async with session.get("https://data-api.polymarket.com/positions", params=params, headers={"User-Agent": "Mozilla/5.0"}, timeout=aiohttp.ClientTimeout(total=12)) as response:
+                if response.status != 200:
+                    self.logger.warning("持仓接口返回 HTTP %s", response.status)
+                    return []
+                data = await response.json()
         except Exception as e:
             self.logger.warning("读取持仓失败: %s", e)
             return []
@@ -2066,11 +2107,11 @@ class PolyQuickTrader:
             "sortBy": "CURRENT",
             "sortDirection": "DESC",
         }
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=12), headers={"User-Agent": "Mozilla/5.0"}) as session:
-            async with session.get("https://data-api.polymarket.com/positions", params=params) as response:
-                if response.status != 200:
-                    raise RuntimeError(f"positions HTTP {response.status}")
-                data = await response.json()
+        session = _get_aiohttp_session()
+        async with session.get("https://data-api.polymarket.com/positions", params=params, headers={"User-Agent": "Mozilla/5.0"}, timeout=aiohttp.ClientTimeout(total=12)) as response:
+            if response.status != 200:
+                raise RuntimeError(f"positions HTTP {response.status}")
+            data = await response.json()
         return data if isinstance(data, list) else []
 
     async def _settle_from_positions(self, token_id: str, deadline_ts: float, stop_event=None):
@@ -2440,10 +2481,10 @@ class PolyQuickTrader:
             return
         url = f"https://sctapi.ftqq.com/{sendkey}.send"
         try:
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
-                async with session.post(url, data={"title": title, "desp": content}) as response:
-                    if response.status >= 400:
-                        self.logger.warning("推送返回 HTTP %s", response.status)
+            session = _get_aiohttp_session()
+            async with session.post(url, data={"title": title, "desp": content}, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                if response.status >= 400:
+                    self.logger.warning("推送返回 HTTP %s", response.status)
         except Exception as e:
             self.logger.error("推送异常: %s", e)
 
@@ -2576,4 +2617,18 @@ if __name__ == "__main__":
     style = ttk.Style(root)
     style.theme_use("clam")
     app = PolyQuickTrader(root)
+
+    def _on_close():
+        try:
+            loop = asyncio.new_event_loop()
+            try:
+                loop.run_until_complete(_close_aiohttp_sessions())
+                loop.run_until_complete(loop.shutdown_asyncgens())
+            finally:
+                loop.close()
+        except Exception:
+            pass
+        root.destroy()
+
+    root.protocol("WM_DELETE_WINDOW", _on_close)
     root.mainloop()
