@@ -80,6 +80,7 @@ class PolyQuickTrader:
         self.latest_quick_markets: list[QuickMarket] = []
         self.latest_positions = []
         self.latest_signal = None
+        self.last_credential_error = None
         self.paper_results = []
         self.live_results = []
         self.live_auto_enabled = False
@@ -601,9 +602,22 @@ class PolyQuickTrader:
             temp_client = ClobClient(host=CLOB_HOST, chain_id=CHAIN_ID, key=self.ent_priv_key.get().strip(), retry_on_error=True)
             creds = await asyncio.to_thread(temp_client.derive_api_key)
             self.logger.info("CLOB API 凭证派生成功。")
+            self.last_credential_error = None
             return creds
         except Exception as e:
-            self.logger.error("派生 CLOB API 凭证失败: %s", e)
+            # Surface the raw SDK error so users (esp. POLY_1271 deposit-wallet
+            # users hitting "signer != API KEY") have a clue without diving into
+            # the log file. Status bar is updated; the next order attempt will
+            # also see the recorded reason via self.last_credential_error.
+            err_text = f"{type(e).__name__}: {e}"
+            self.logger.error("派生 CLOB API 凭证失败: %s", err_text, exc_info=True)
+            self.last_credential_error = err_text
+            try:
+                self.root.after(0, lambda et=err_text: self.lbl_quick_signal.configure(
+                    text=f"⚠️ CLOB 凭证派生失败: {et[:120]}", foreground="#b91c1c"
+                ))
+            except Exception:
+                pass  # UI may not be initialized in non-GUI test paths
             return None
 
     def build_client(self, config, creds):
@@ -1048,20 +1062,33 @@ class PolyQuickTrader:
         cleaned = re.sub(r"<think>.*?</think>", "", content or "", flags=re.S).strip()
         if not cleaned and content:
             cleaned = content.split("</think>", 1)[-1].strip() if "</think>" in content else content.strip()
-        match = re.search(r"\{.*\}", cleaned, flags=re.S)
-        if match:
-            cleaned = match.group(0)
+        # Prefer the LAST balanced {...} block — LLMs often emit reasoning
+        # chain + final JSON; greedy `\{.*\}` would over-capture both.
+        candidates = re.findall(r"\{[^{}]*\}", cleaned, flags=re.S)
+        if candidates:
+            cleaned = candidates[-1]
         if not cleaned.startswith("{"):
             raise ValueError("MiniMax 未返回 JSON 对象")
         parsed = json.loads(cleaned)
-        prob_up = min(max(float(parsed.get("prob_up", 0.5)), 0.0), 1.0)
+        prob_up = self._safe_prob(parsed.get("prob_up"), default=0.5)
+        prob_down = self._safe_prob(parsed.get("prob_down"), default=1.0 - prob_up)
         parsed["prob_up"] = prob_up
-        parsed["prob_down"] = min(max(float(parsed.get("prob_down", 1.0 - prob_up)), 0.0), 1.0)
+        parsed["prob_down"] = prob_down
         if parsed.get("action") not in {"BUY_UP", "BUY_DOWN", "NO_TRADE"}:
             parsed["action"] = "NO_TRADE"
         if parsed.get("confidence") not in {"LOW", "MEDIUM", "HIGH"}:
             parsed["confidence"] = "LOW"
         return parsed
+
+    @staticmethod
+    def _safe_prob(value, default):
+        try:
+            v = float(value)
+        except (TypeError, ValueError):
+            return default
+        if v != v or v in (float("inf"), float("-inf")):
+            return default
+        return min(max(v, 0.0), 1.0)
 
     def render_btc_signal(self, signal):
         direction = "Up" if signal["prob_up"] >= 0.5 else "Down"
@@ -1945,8 +1972,7 @@ class PolyQuickTrader:
             options=PartialCreateOrderOptions(tick_size=tick_size or market.tick_size),
         )
         resp = await self._post_signed_order_with_retry(client, signed, order_type=OrderType.GTC, post_only=False)
-        if isinstance(resp, dict) and resp.get("success") is False:
-            raise RuntimeError(f"交易所拒绝订单: {resp}")
+        self._assert_order_response_ok(resp, action_name="快速买入")
         fill = self._extract_fill(resp, limit_price=price, limit_size=size)
         if fill["verified"]:
             self.logger.info("成交确认: limit=%.4f×%.4f → fill=%.4f×%.4f status=%s", price, size, fill["fill_price"], fill["fill_size"], fill["status"])
@@ -1998,8 +2024,7 @@ class PolyQuickTrader:
             options=PartialCreateOrderOptions(tick_size=tick_size),
         )
         resp = await self._post_signed_order_with_retry(client, signed, order_type=OrderType.GTC, post_only=False)
-        if isinstance(resp, dict) and resp.get("success") is False:
-            raise RuntimeError(f"交易所拒绝卖出订单: {resp}")
+        self._assert_order_response_ok(resp, action_name="限价卖出")
         return resp
 
     async def fetch_positions(self):
@@ -2327,8 +2352,7 @@ class PolyQuickTrader:
             options=PartialCreateOrderOptions(tick_size=tick_size),
         )
         resp = await self._post_signed_order_with_retry(client, signed, order_type=OrderType.GTC, post_only=False)
-        if isinstance(resp, dict) and resp.get("success") is False:
-            raise RuntimeError(f"交易所拒绝订单: {resp}")
+        self._assert_order_response_ok(resp, action_name="持仓限价卖出")
         await self.push_trade_result(
             "限价卖出",
             position.get("title", ""),
@@ -2472,6 +2496,22 @@ class PolyQuickTrader:
         if not (0.0 < fill_price < 1.0):
             return {"fill_price": float(limit_price), "fill_size": float(limit_size), "status": status, "verified": False}
         return {"fill_price": fill_price, "fill_size": fill_size, "status": status, "verified": True}
+
+    @staticmethod
+    def _assert_order_response_ok(resp, action_name="订单"):
+        """
+        Raise RuntimeError with a specific status hint if resp is not a
+        success-shaped CLOB response. Per Polymarket order-lifecycle docs,
+        success statuses are: live | matched | delayed. Anything else
+        (unmatched, missing status field, success: false) must abort.
+        """
+        if not isinstance(resp, dict):
+            raise RuntimeError(f"{action_name}失败: 非 dict 响应 {type(resp).__name__}")
+        if resp.get("success") is False:
+            raise RuntimeError(f"{action_name}失败: 交易所拒绝 {resp}")
+        status = str(resp.get("status") or "").lower()
+        if status not in {"live", "matched", "delayed"}:
+            raise RuntimeError(f"{action_name}失败: 状态 '{status or '<missing>'}'，订单未稳定落地，请去 polymarket.com/portfolio 对账")
 
     def _parse_token_ids(self, raw):
         if isinstance(raw, list):
