@@ -68,9 +68,9 @@ Below the two columns: ONE shared `live_tree` Treeview + new `策略` column. Ne
 
 `live_auto_button_clicked` (~L1567) reads `self.cbo_live_mode.get()`. Replace with `live_auto_button_clicked(mode: str)`, wire buttons via `functools.partial(self.live_auto_button_clicked, REVERSAL_MODE_RED_UP)`. Body: read all entry widgets via `[mode]` index, validate `daily_max_exposure_usdc` (raise messagebox on parse error / `≤0`), set `self.live_auto_running[mode] = True`, `self.live_auto_stop_requested[mode].clear()`, `self.live_results[mode] = []`, configure `self.btn_start_live_auto[mode]` disabled and `self.btn_stop_live_auto[mode]` normal, spawn worker thread (one daemon thread + `asyncio.new_event_loop()` per mode, same shape as today). Finally clause clears `self.live_auto_running[mode]`. Two start buttons clickable independently.
 
-### Step 4 — Parameterize `run_reversal_live_real` stop-event lookup
+### Step 4 — Parameterize `run_reversal_live_real`
 
-In `run_reversal_live_real(config)` (~L1648), bind once at function top to a local `stop_event = self.live_auto_stop_requested[config["mode"]]`. Replace every `self.live_auto_stop_requested` reference (L1663, L1673, L1682, L1692, L1698, L1699, L1864) with `stop_event`. `_settle_from_positions(token_id_settled, settle_deadline, self.live_auto_stop_requested)` (L1769 etc.) → pass `stop_event`. `self.live_results.append(row)` (L1752) → `self.live_results[config["mode"]].append(row)`.
+In `run_reversal_live_real(config)` (~L1648), bind `stop_event = self.live_auto_stop_requested[config["mode"]]` at top. Replace every `self.live_auto_stop_requested` (L1663/1673/1682/1692/1698/1699/1864) with `stop_event`. `_settle_from_positions(..., self.live_auto_stop_requested)` (L1769) → pass `stop_event`. `self.live_results.append(row)` (L1752) → `self.live_results[config["mode"]].append(row)`.
 
 ### Step 5 — Exposure cap enforcement (THE risk-bearing addition)
 
@@ -78,11 +78,11 @@ New helper, inserted immediately after `_settle_from_positions`:
 
 ```python
     def _total_open_exposure_usdc(self) -> float:
-        """Sum stake_usdc across every active layer in every mode. Used at
-        new-cycle gate only (not mid-cycle — would race Phase 5 rollback)."""
+        """Sum stake across active layers in every mode. New-cycle gate only
+        (mid-cycle would race Phase 5 rollback)."""
         total = 0.0
-        for mode_results in self.live_results.values():
-            for row in mode_results:
+        for rows in self.live_results.values():
+            for row in rows:
                 if row.get("status") in ("OPEN_REAL", "REVERSAL_REAL_NEXT"):
                     try:
                         total += float(row.get("entry", 0)) * float(row.get("size", 0))
@@ -95,19 +95,15 @@ In `run_reversal_live_real`, immediately AFTER `cycle_count += 1` (L1686) and BE
 
 ```python
             current_exposure = self._total_open_exposure_usdc()
-            projected_exposure = current_exposure + sum(stakes)
             cap = config.get("daily_max_exposure_usdc", float("inf"))
-            if projected_exposure > cap:
-                self.log_live(
-                    logging.WARNING,
+            if current_exposure + sum(stakes) > cap:
+                self.log_live(logging.WARNING,
                     "%s 周期 #%s 拒绝触发: 预计暴露 $%.2f + 现有 $%.2f > 上限 $%.2f",
-                    profile["label"], cycle_count, sum(stakes), current_exposure, cap,
-                )
+                    profile["label"], cycle_count, sum(stakes), current_exposure, cap)
                 await self.push_to_server_chan(
                     "Polymarket 反转实盘 ⚠️ 暴露超限",
-                    f"### ⚠️ 暴露超限\n\n- 策略: `{profile['label']}`\n- 周期: `{cycle_count}`\n- 预计新增暴露: `${sum(stakes):.2f}`\n- 现有暴露: `${current_exposure:.2f}`\n- 上限: `${cap:.2f}`",
-                )
-                seen_triggers.add(trigger_key)  # don't retry same trigger
+                    f"### ⚠️ 暴露超限\n\n- 策略: `{profile['label']}`\n- 周期: `{cycle_count}`\n- 预计新增: `${sum(stakes):.2f}`\n- 现有: `${current_exposure:.2f}`\n- 上限: `${cap:.2f}`")
+                seen_triggers.add(trigger_key)
                 continue
 ```
 
@@ -201,22 +197,22 @@ Sandbox-friendly variant (Lesson 2): `pytest tests/test_parallel.py -p no:cachep
 
 ⚠️ **Minimum stake (0.5 USDC initial, max_layers=2) for ALL Phase 12 live verification.**
 
-1. Launch GUI; live tab shows two columns. Each independently editable.
-2. Click "启动 三连阴转 UP" only → only RED_UP runs; GREEN_DOWN button still enabled.
-3. Click "启动 三连阳转 DOWN" while RED_UP running → both run; `live_tree` shows `策略` column interleaved.
-4. Click "停止 三连阴转 UP" → only RED_UP stops; GREEN_DOWN keeps running. Verify log lines tagged per mode.
-5. Set `daily_max_exposure_usdc=5`; start both with initial=5 → second mode trigger → Server酱 `⚠️ 暴露超限` + seen_triggers entry without buy.
-6. `trade_journal.csv` shows rows from both strategies; `(strategy, cycle)` tuples unique per mode.
+1. GUI shows two columns; each independently editable.
+2. Click 启动 RED_UP only → only RED_UP runs; GREEN_DOWN still enabled.
+3. Click 启动 GREEN_DOWN while RED_UP running → both run; `live_tree` shows interleaved `策略` column.
+4. Click 停止 RED_UP → only RED_UP stops; GREEN_DOWN continues. Verify per-mode log tagging.
+5. `daily_max_exposure_usdc=5` + start both with initial=5 → second mode triggers → Server酱 `⚠️ 暴露超限` + seen_triggers entry, no buy.
+6. `trade_journal.csv` rows from both strategies; `(strategy, cycle)` tuples unique per mode.
 7. Phase 11 daily report next morning aggregates BOTH strategies separately.
-8. `lsof -p $(pgrep -f poly_mm_pro_max) | grep TCP | wc -l` stable over 30 min running both — Phase 7 contract held.
-9. Stop on a stopped mode does NOT touch the other mode's state.
+8. `lsof -p $(pgrep -f poly_mm_pro_max) | grep TCP | wc -l` stable over 30 min — Phase 7 contract held.
+9. Stop on a stopped mode does NOT touch other mode's state.
 
 ## Relationship to other phases
 
-- **Hard-depends on** Phase 1 ✅, Phase 4 ✅, Phase 5 ✅, Phase 10 (must land first).
-- **Coexists with** Phase 11 daily report (already groups by `strategy`) and Phase 7 shared session (loop-id keyed; two worker threads = two loops = two sessions, safe under Phase 7 final-patch `1b4e4a8`).
+- **Hard-depends on** Phase 1 ✅, 4 ✅, 5 ✅, 10 (must land first).
+- **Coexists with** Phase 11 (groups by `strategy`) and Phase 7 (loop-id keyed; two threads = two loops = two sessions, Phase 7 final-patch `1b4e4a8`).
 - **Does NOT touch** Phase 2, 3, 6, 8, 9.
 
 ## Plan-coverage false-positive ack (Lesson 5)
 
-`tests/test_parallel.py` will be NEW but NOT `git add`-ed. Codex `git diff --name-only` will report `poly_mm_pro_max.py` + `poly_config_pro.example.json` only, BLOCKing on plan_coverage. Override pre-authorized if `git status --porcelain` shows `?? tests/test_parallel.py`, all 11 tests pass, AND user confirmed Phase 1/4/5/10 live-verified before cycle starts.
+`tests/test_parallel.py` NEW but un-`git add`-ed. Codex `git diff --name-only` will BLOCK on plan_coverage. Override pre-authorized if `git status --porcelain` shows `?? tests/test_parallel.py`, all 11 tests pass, AND user confirmed Phase 1/4/5/10 live-verified.
