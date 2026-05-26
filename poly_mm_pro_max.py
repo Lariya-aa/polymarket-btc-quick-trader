@@ -136,6 +136,12 @@ class PolyQuickTrader:
         self.last_credential_error = None
         self.paper_results = []
         self.live_results = []
+        # Phase 10 account refresh state
+        self.account_last_refresh_ts: float = 0.0
+        self.account_last_balance_usdc = None
+        self.account_last_positions_value = None
+        self.account_last_positions_count: int = 0
+        self.account_last_error: str = ""
         self.live_auto_enabled = False
         self.live_auto_running = False
         self.live_auto_stop_requested = threading.Event()
@@ -172,6 +178,7 @@ class PolyQuickTrader:
         self.load_credentials_from_env()
         # Phase 11: schedule daily report check (idempotent, fires once per UTC day).
         self.root.after(5_000, self._daily_report_tick)
+        self.root.after(3_000, self._periodic_account_refresh_tick)
 
     def log_category_filter(self, record):
         record.category = getattr(self.log_context, "category", "manual")
@@ -364,6 +371,14 @@ class PolyQuickTrader:
             self.paper_tree.heading(col, text=title)
             self.paper_tree.column(col, width=paper_widths[col], anchor="center" if col != "slug" else "w")
         self.paper_tree.pack(fill="x", expand=False)
+
+        self.lbl_account_status = ttk.Label(
+            manual_tab,
+            text="账户状态加载中...",
+            foreground="#475569",
+            font=("Helvetica", 10),
+        )
+        self.lbl_account_status.pack(fill="x", padx=0, pady=(4, 0))
 
         pos_frame = ttk.LabelFrame(manual_tab, text=" 持仓与卖出 ", padding=10)
         pos_frame.pack(fill="x", padx=0, pady=5)
@@ -2106,6 +2121,84 @@ class PolyQuickTrader:
             return []
         return data if isinstance(data, list) else []
 
+    async def _fetch_positions_value(self):
+        """Return total value of user's positions (USDC) via data-api /value.
+
+        Returns None on failure (caller preserves last known value).
+        Returns 0.0 when the user has no positions (empty array response).
+        """
+        user = self.ent_funder.get().strip()
+        if not user:
+            return None
+        try:
+            session = _get_aiohttp_session()
+            async with session.get(
+                "https://data-api.polymarket.com/value",
+                params={"user": user},
+                headers={"User-Agent": "Mozilla/5.0"},
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as response:
+                if response.status != 200:
+                    self.logger.warning("positions value HTTP %s", response.status)
+                    return None
+                data = await response.json()
+        except Exception as e:
+            self.logger.warning("positions value 读取失败: %s", e)
+            return None
+        if not isinstance(data, list) or not data:
+            return 0.0
+        try:
+            return float(data[0].get("value", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            return None
+
+    POLYGON_USDC_CONTRACT = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
+    POLYGON_RPC_URL = "https://polygon-rpc.com"
+
+    async def _fetch_usdc_balance_onchain(self):
+        """Return funder address's free USDC balance on Polygon via JSON-RPC.
+
+        Uses ERC20 balanceOf selector 0x70a08231. USDC has 6 decimals.
+        Returns None on failure (caller preserves last known value).
+        """
+        user = self.ent_funder.get().strip()
+        if not user or not user.startswith("0x") or len(user) != 42:
+            return None
+        addr_clean = user[2:].lower()
+        data_field = "0x70a08231" + "0" * 24 + addr_clean
+        payload = {
+            "jsonrpc": "2.0",
+            "method": "eth_call",
+            "params": [
+                {"to": self.POLYGON_USDC_CONTRACT, "data": data_field},
+                "latest",
+            ],
+            "id": 1,
+        }
+        try:
+            session = _get_aiohttp_session()
+            async with session.post(
+                self.POLYGON_RPC_URL,
+                json=payload,
+                headers={"Content-Type": "application/json"},
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as response:
+                if response.status != 200:
+                    self.logger.warning("USDC balance RPC HTTP %s", response.status)
+                    return None
+                resp_json = await response.json()
+        except Exception as e:
+            self.logger.warning("USDC balance RPC 读取失败: %s", e)
+            return None
+        result_hex = resp_json.get("result")
+        if not isinstance(result_hex, str) or not result_hex.startswith("0x"):
+            self.logger.warning("USDC balance RPC 响应缺 result: %s", resp_json)
+            return None
+        try:
+            return int(result_hex, 16) / 1_000_000.0
+        except ValueError:
+            return None
+
     async def _fetch_positions_raw(self):
         """
         Like fetch_positions() but raises on HTTP/transport error instead
@@ -2439,6 +2532,91 @@ class PolyQuickTrader:
                 threading.Thread(target=worker, daemon=True).start()
         finally:
             self.root.after(60_000, self._daily_report_tick)
+
+    def _periodic_account_refresh_tick(self):
+        """Tk root.after callback. Spawns worker thread that fetches
+        positions + positions value + free USDC balance, updates
+        lbl_account_status, then re-schedules itself."""
+        try:
+            if getattr(self, "_account_refresh_running", False):
+                return
+            self._account_refresh_running = True
+
+            def worker():
+                try:
+                    loop = asyncio.new_event_loop()
+                    try:
+                        positions, pos_value, balance = loop.run_until_complete(
+                            self._gather_account_refresh()
+                        )
+                    finally:
+                        loop.close()
+                    self.root.after(0, lambda: self._apply_account_refresh(
+                        positions, pos_value, balance
+                    ))
+                except Exception as e:
+                    self.logger.warning("account refresh worker 异常: %s", e)
+                    self.account_last_error = str(e)[:120]
+                finally:
+                    self._account_refresh_running = False
+
+            threading.Thread(target=worker, daemon=True).start()
+        finally:
+            self.root.after(60_000, self._periodic_account_refresh_tick)
+
+    async def _gather_account_refresh(self):
+        positions_task = asyncio.create_task(self.fetch_positions())
+        value_task = asyncio.create_task(self._fetch_positions_value())
+        balance_task = asyncio.create_task(self._fetch_usdc_balance_onchain())
+        positions = await positions_task
+        pos_value = await value_task
+        balance = await balance_task
+        return positions, pos_value, balance
+
+    def _apply_account_refresh(self, positions, pos_value, balance):
+        now = time.time()
+        # Phase 10 Codex blocker: only update refresh_ts when at least one
+        # explicit data source succeeded. fetch_positions() returns []
+        # ambiguously (could be HTTP failure or genuinely-no-positions), so
+        # use pos_value/balance None-vs-not-None as the unambiguous signal.
+        # If both are None, the network is bad — keep prior refresh_ts so
+        # _render_account_status_label produces the stale (orange) marker.
+        any_success = (pos_value is not None) or (balance is not None)
+        if positions is not None and any_success:
+            # Only trust the positions list if at least one other source
+            # also returned cleanly — else we may have an empty list from
+            # a silent HTTP failure inside fetch_positions().
+            self.latest_positions = positions
+            self.account_last_positions_count = sum(
+                1 for p in positions if self._float_or_zero(p.get("size")) > 0.000001
+            )
+            self.render_positions(positions)
+        if pos_value is not None:
+            self.account_last_positions_value = pos_value
+        if balance is not None:
+            self.account_last_balance_usdc = balance
+        if any_success:
+            self.account_last_refresh_ts = now
+        # else: keep prior refresh_ts so the age computation in
+        # _render_account_status_label produces the stale orange marker.
+        self._render_account_status_label(now)
+
+    def _render_account_status_label(self, now=None):
+        if now is None:
+            now = time.time()
+        age = max(0.0, now - self.account_last_refresh_ts) if self.account_last_refresh_ts else None
+        b = self.account_last_balance_usdc
+        v = self.account_last_positions_value
+        n = self.account_last_positions_count
+        b_str = f"${b:.2f}" if b is not None else "--"
+        v_str = f"${v:.2f}" if v is not None else "--"
+        if age is None:
+            text = f"余额: {b_str} | 持仓市值: {v_str} | 持仓: {n} 条 | 加载中..."
+            color = "#475569"
+        else:
+            text = f"余额: {b_str} | 持仓市值: {v_str} | 持仓: {n} 条 | 刷新: {int(age)}s 前"
+            color = "#475569" if age < 90 else "#d97706"
+        self.lbl_account_status.configure(text=text, foreground=color)
 
     async def _generate_and_push_daily_report(self, target_date_utc: str, last_path: str):
         import csv as _csv
