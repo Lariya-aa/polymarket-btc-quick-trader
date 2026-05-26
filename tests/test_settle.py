@@ -160,3 +160,23 @@ def test_settle_http_failure_then_real_absent_two_cycles(monkeypatch):
     result = _run(inst._settle_from_positions("tok-A", time.time() + 60))
     assert result == "loss"
     assert calls["count"] == 3
+
+
+def test_settle_absent_then_http_failure_then_absent_resets_streak(monkeypatch):
+    """Final Codex P1 BLOCKER: absent → HTTP fail → absent must NOT classify
+    as loss. The two absent polls have to be consecutive successful fetches,
+    not just two-total. Otherwise a single transient 503 in the middle of a
+    still-settling market can flip the cycle to a false LOSS and trigger
+    martingale doubling at the next layer.
+    """
+    _orig_sleep = mod.asyncio.sleep
+    monkeypatch.setattr(mod.asyncio, "sleep", lambda *_a, **_kw: _orig_sleep(0))
+    inst, calls = _make_trader(monkeypatch, [
+        [{"asset": "other-tok", "size": 5.0}],          # absent #1 (success)
+        RuntimeError("positions HTTP 503"),             # transient error
+        [{"asset": "other-tok", "size": 5.0}],          # absent again (single)
+        [{"asset": "tok-A", "size": 10.0, "redeemable": True}],  # recovers to WIN
+    ])
+    result = _run(inst._settle_from_positions("tok-A", time.time() + 60))
+    assert result == "win"
+    assert calls["count"] == 4

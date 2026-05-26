@@ -37,6 +37,19 @@ def _get_aiohttp_session(default_timeout_total: float = 12.0,
     loop = asyncio.get_running_loop()
     key = id(loop)
     with _AIOHTTP_SESSIONS_LOCK:
+        # GC stale cached sessions whose loops have been closed by their
+        # short-lived GUI-click workers (Final Codex P2: each click runs
+        # asyncio.new_event_loop()+close(); without this, every click left
+        # a dead-loop session in the cache forever).
+        stale_keys = []
+        for k, s in _AIOHTTP_SESSIONS.items():
+            try:
+                if getattr(s, "_loop", None) is not None and s._loop.is_closed():
+                    stale_keys.append(k)
+            except Exception:
+                pass
+        for k in stale_keys:
+            _AIOHTTP_SESSIONS.pop(k, None)
         existing = _AIOHTTP_SESSIONS.get(key)
         if existing is not None and not existing.closed:
             return existing
@@ -2142,6 +2155,11 @@ class PolyQuickTrader:
                 positions = await self._fetch_positions_raw()
             except Exception as e:
                 self.logger.warning("settle 阶段 positions fetch 失败 (重试): %s", e)
+                # V8 final-review patch: reset absent-streak so a transient
+                # HTTP failure between two successful absent polls cannot
+                # collapse into a false LOSS. We require two CONSECUTIVE
+                # successful absent polls, not just two-total.
+                last_state = None
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 1.5, 60.0)
                 continue
@@ -2303,16 +2321,32 @@ class PolyQuickTrader:
         timeouts = [r for r in same_day if r.get("outcome") == "pending_timeout"]
         unverified = [r for r in same_day if r.get("fill_verified") == "False"]
         pnl_sum = 0.0
+        # Per-cycle aggregation per Final Codex P2 BLOCKER: trade_journal
+        # writes one row per layer. The WIN layer's pnl_estimate already
+        # subtracted accumulated_loss (Phase 9 invariant), so simply
+        # summing every row across a lose-then-win cycle counted prior
+        # losses twice. Aggregate per (strategy, cycle): if any row is WIN
+        # its pnl IS the net; otherwise sum all rows (LOSS-only / timeout-
+        # only cycles have no double-count).
+        cycles_for_pnl: dict[tuple, list[dict]] = {}
         for r in same_day:
-            try:
-                v = float(r.get("pnl_estimate", "0") or "0")
-            except (TypeError, ValueError):
-                continue
-            # V3 guard (Phase 11 Codex warn): NaN/Inf in pnl_estimate would
-            # poison the entire daily P&L sum (NaN + anything == NaN).
-            if v != v or v in (float("inf"), float("-inf")):
-                continue
-            pnl_sum += v
+            cycles_for_pnl.setdefault((r["strategy"], r["cycle"]), []).append(r)
+        for cycle_rows in cycles_for_pnl.values():
+            win_row = next((r for r in cycle_rows if r.get("outcome") == "win"), None)
+            if win_row is not None:
+                contributing_rows = [win_row]
+            else:
+                contributing_rows = cycle_rows
+            for r in contributing_rows:
+                try:
+                    v = float(r.get("pnl_estimate", "0") or "0")
+                except (TypeError, ValueError):
+                    continue
+                # V3 guard (Phase 11 Codex warn): NaN/Inf in pnl_estimate would
+                # poison the entire daily P&L sum (NaN + anything == NaN).
+                if v != v or v in (float("inf"), float("-inf")):
+                    continue
+                pnl_sum += v
         # Max consecutive loss layers within any single (strategy,cycle).
         max_consec_loss = 0
         per_cycle: dict[tuple, list[dict]] = {}
